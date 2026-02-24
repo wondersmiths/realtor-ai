@@ -47,3 +47,39 @@ export interface PdfDeepParseResult {
   parserVersion: string;
   parsedAt: string;
 }
+
+// ── Multi-path signature detection ─────────────────────────────────────────
+
+export type DetectionMethod = 'structural' | 'annotation' | 'keyword' | 'ocr';
+
+/** Result from a single detection path on a single page. */
+export interface DetectionPathResult {
+  method: DetectionMethod;
+  detected: boolean;
+  confidence: number;
+  evidence: string[];
+  boundingBox: PdfBoundingBox | null;
+}
+
+/** Per-page signature detection with cross-validated scoring. */
+export interface PageSignatureDetection {
+  page: number;
+  detection_methods: DetectionPathResult[];
+  detected: boolean;
+  agreement_score: number;
+  final_confidence_score: number;
+}
+
+/** Full result of multi-path signature detection across all pages. */
+export interface SignatureDetectionResult {
+  pages: PageSignatureDetection[];
+  totalSignaturesDetected: number;
+  detectionSummary: {
+    structuralCount: number;
+    annotationCount: number;
+    keywordCount: number;
+    ocrCount: number;
+  };
+  detectorVersion: string;
+  detectedAt: string;
+}

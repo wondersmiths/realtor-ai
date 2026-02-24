@@ -5,8 +5,8 @@ import { ComplianceService } from '@/services/compliance.service';
 import { DocumentStatus, ComplianceCheckType, ComplianceCheckStatus } from '@/types/enums';
 import { enqueueNotification } from '@/lib/queue/producer';
 import type { DocumentReviewJob } from '@/lib/queue/jobs';
-import { deepParsePdf } from '@/lib/pdf';
-import type { PdfDeepParseResult } from '@/types/pdf';
+import { deepParsePdf, detectSignatures } from '@/lib/pdf';
+import type { PdfDeepParseResult, SignatureDetectionResult } from '@/types/pdf';
 
 /**
  * Document review processor.
@@ -37,6 +37,7 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
   let extractedText = '';
   let pageCount: number | undefined;
   let deepParseResult: PdfDeepParseResult | null = null;
+  let signatureDetection: SignatureDetectionResult | null = null;
 
   try {
     // 1. Download file from Supabase Storage
@@ -68,6 +69,16 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
           deepParseErr instanceof Error ? deepParseErr.message : deepParseErr,
         );
       }
+
+      // Multi-path signature detection (non-fatal)
+      try {
+        signatureDetection = await detectSignatures(buffer, extractedText, deepParseResult ?? undefined);
+      } catch (sigDetectErr) {
+        console.warn(
+          `[DocumentReviewWorker] Signature detection failed for ${documentId}:`,
+          sigDetectErr instanceof Error ? sigDetectErr.message : sigDetectErr,
+        );
+      }
     } else if (extension === 'docx') {
       const mammoth = await import('mammoth');
       const mammothResult = await mammoth.extractRawText({ buffer });
@@ -95,6 +106,7 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
       pageCount,
       extractedTextLength: extractedText.length,
       ...(deepParseResult ? { pdfStructure: deepParseResult } : {}),
+      ...(signatureDetection ? { signatureDetection } : {}),
     };
 
     // Store extracted text and updated metadata on the document record
