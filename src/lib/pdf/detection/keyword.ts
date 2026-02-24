@@ -1,4 +1,4 @@
-import type { DetectionPathResult } from '@/types/pdf';
+import type { DetectionHit } from '@/types/pdf';
 
 // ── Keyword categories with weights ────────────────────────────────────────
 
@@ -45,7 +45,6 @@ const PROXIMITY_WINDOW = 3;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Check if any proximity booster appears within a window of lines. */
 function findProximityBoost(
   lines: string[],
   anchorIdx: number,
@@ -70,30 +69,19 @@ function findProximityBoost(
 /**
  * Path 3: Keyword + layout proximity detection.
  *
- * Scans extracted text for signature-related keywords, signature line
- * patterns (underscores, X-marks), and checks whether proximity keywords
- * ("date:", "print name") appear near signature keywords — boosting
- * confidence when the spatial layout matches a real signature block.
+ * Returns a single aggregate DetectionHit per page (no bounding box)
+ * summarizing all keyword / line-pattern evidence found.
  */
 export function detectKeyword(
   pageText: string,
   _page: number,
-): DetectionPathResult {
-  if (!pageText.trim()) {
-    return {
-      method: 'keyword',
-      detected: false,
-      confidence: 0,
-      evidence: [],
-      boundingBox: null,
-    };
-  }
+): DetectionHit[] {
+  if (!pageText.trim()) return [];
 
   const lines = pageText.split('\n');
   const evidence: string[] = [];
   let totalScore = 0;
 
-  // Scan signature keywords
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
 
@@ -102,15 +90,13 @@ export function detectKeyword(
         evidence.push(`${entry.label} (line ${lineIdx + 1})`);
         totalScore += entry.weight;
 
-        // Check proximity for this anchor
         const prox = findProximityBoost(lines, lineIdx);
         totalScore += prox.boost;
         evidence.push(...prox.evidence);
-        break; // one keyword match per line is enough
+        break; // one keyword match per line
       }
     }
 
-    // Scan line patterns
     for (const entry of LINE_PATTERNS) {
       if (entry.pattern.test(line)) {
         evidence.push(`${entry.label} (line ${lineIdx + 1})`);
@@ -120,14 +106,12 @@ export function detectKeyword(
     }
   }
 
-  // Cap at 1.0
-  const confidence = Math.min(totalScore, 1);
+  if (totalScore < 0.20 || evidence.length === 0) return [];
 
-  return {
+  return [{
     method: 'keyword',
-    detected: confidence >= 0.20,
-    confidence,
+    confidence: Math.min(totalScore, 1),
+    boundingBox: null,
     evidence,
-    boundingBox: null, // text-based detection has no bounding box
-  };
+  }];
 }

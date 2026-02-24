@@ -7,7 +7,10 @@ export type {
   PdfAcroFormInfo,
   PdfDeepParseResult,
   DetectionMethod,
+  DetectionHit,
   DetectionPathResult,
+  ReviewStatus,
+  SignatureConfidence,
   PageSignatureDetection,
   SignatureDetectionResult,
 } from '@/types/pdf';

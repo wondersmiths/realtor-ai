@@ -1,122 +1,249 @@
 import type {
   DetectionMethod,
+  DetectionHit,
   DetectionPathResult,
+  SignatureConfidence,
   PageSignatureDetection,
+  PdfBoundingBox,
 } from '@/types/pdf';
 
-// ── Weights ────────────────────────────────────────────────────────────────
+// ── Confidence model ───────────────────────────────────────────────────────
 
-/**
- * Path weights. Structural carries the highest weight because an
- * AcroForm /FT /Sig field is the most authoritative proof that a
- * signature location exists in the PDF.
- */
-const WEIGHTS: Record<DetectionMethod, number> = {
-  structural: 0.45,
-  annotation: 0.25,
-  keyword:    0.20,
-  ocr:        0.10,
+/** Base confidence when a method is the primary (strongest) detector. */
+const METHOD_BASE: Record<DetectionMethod, number> = {
+  structural: 0.99,
+  annotation: 0.95,
+  keyword:    0.80,
+  ocr:        0.70,
 };
 
-// ── Cross-validation ───────────────────────────────────────────────────────
+/** Bonus added for each additional corroborating method. */
+const AGREEMENT_BONUS = 0.02;
 
-/**
- * Compute the agreement score among detection paths.
- *
- * Only paths that actually had data to analyze (confidence > 0 or detected)
- * are considered "participating". Agreement measures how much the
- * participating paths agree on whether a signature is present.
- *
- * Returns a value from 0 (full disagreement) to 1 (full agreement).
- */
-function computeAgreement(results: DetectionPathResult[]): number {
-  // A path "participates" if it had any evidence to evaluate.
-  // Paths that returned confidence 0 with no evidence simply had no
-  // data — they neither agree nor disagree.
-  const participating = results.filter(
-    (r) => r.evidence.length > 0,
+/** Hard cap when OCR is the only detection method. */
+const OCR_ONLY_CAP = 0.75;
+
+/** Confidence threshold below which manual review is recommended. */
+const MANUAL_REVIEW_THRESHOLD = 0.85;
+
+/** Method priority — higher index = higher priority. */
+const METHOD_PRIORITY: DetectionMethod[] = ['ocr', 'keyword', 'annotation', 'structural'];
+
+/** Distance threshold (PDF points) for grouping two bounding boxes. */
+const PROXIMITY_THRESHOLD = 60;
+
+// ── Spatial helpers ────────────────────────────────────────────────────────
+
+function boxCenter(box: PdfBoundingBox): { cx: number; cy: number } {
+  return { cx: (box.x1 + box.x2) / 2, cy: (box.y1 + box.y2) / 2 };
+}
+
+function boxesNear(a: PdfBoundingBox, b: PdfBoundingBox): boolean {
+  const ca = boxCenter(a);
+  const cb = boxCenter(b);
+  return (
+    Math.abs(ca.cx - cb.cx) < PROXIMITY_THRESHOLD &&
+    Math.abs(ca.cy - cb.cy) < PROXIMITY_THRESHOLD
   );
+}
 
-  if (participating.length <= 1) {
-    // Only one path had data — no cross-validation possible.
-    // Return a neutral score that neither boosts nor penalizes.
-    return 0.5;
+// ── Signature grouping ─────────────────────────────────────────────────────
+
+interface SignatureGroup {
+  hits: DetectionHit[];
+  methods: Set<DetectionMethod>;
+  boundingBox: PdfBoundingBox | null;
+}
+
+/**
+ * Group hits into signature candidates using spatial proximity.
+ *
+ * "Anchor" hits (structural, annotation) have bounding boxes and
+ * represent discrete signatures. They're grouped if their boxes overlap.
+ *
+ * "Support" hits (keyword, OCR) have no bounding box. They corroborate
+ * every anchor group on the page. If no anchors exist, support hits
+ * form a single standalone group.
+ */
+function groupHits(hits: DetectionHit[]): SignatureGroup[] {
+  const anchors = hits.filter((h) => h.boundingBox !== null);
+  const supports = hits.filter((h) => h.boundingBox === null);
+
+  const groups: SignatureGroup[] = [];
+
+  // Cluster anchors by spatial proximity
+  for (const anchor of anchors) {
+    let merged = false;
+    for (const group of groups) {
+      if (
+        group.boundingBox &&
+        anchor.boundingBox &&
+        boxesNear(group.boundingBox, anchor.boundingBox)
+      ) {
+        group.hits.push(anchor);
+        group.methods.add(anchor.method);
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) {
+      groups.push({
+        hits: [anchor],
+        methods: new Set([anchor.method]),
+        boundingBox: anchor.boundingBox,
+      });
+    }
   }
 
-  const detectCount = participating.filter((r) => r.detected).length;
-  const noDetectCount = participating.length - detectCount;
-
-  // Agreement = fraction of paths on the majority side
-  const majority = Math.max(detectCount, noDetectCount);
-  return majority / participating.length;
-}
-
-/**
- * Compute the final confidence score for a page.
- *
- * 1. Weighted sum of each path's confidence × its weight.
- * 2. Adjusted by agreement score — consensus boosts, disagreement dampens.
- *
- * The formula is:
- *   raw = sum(confidence_i × weight_i)
- *   final = raw × (0.5 + 0.5 × agreement)
- *
- * This means:
- *   - Full agreement (1.0) → raw score preserved.
- *   - Neutral (0.5)       → 75% of raw (single-path data).
- *   - Full disagreement (0.0) → 50% of raw (heavy penalty).
- */
-function computeFinalConfidence(
-  results: DetectionPathResult[],
-  agreement: number,
-): number {
-  let raw = 0;
-  for (const r of results) {
-    raw += r.confidence * WEIGHTS[r.method];
+  // Attach support hits to all anchor groups
+  if (groups.length > 0) {
+    for (const support of supports) {
+      for (const group of groups) {
+        group.hits.push(support);
+        group.methods.add(support.method);
+      }
+    }
+  } else if (supports.length > 0) {
+    // No anchors — support hits form a standalone group
+    groups.push({
+      hits: supports,
+      methods: new Set(supports.map((s) => s.method)),
+      boundingBox: null,
+    });
   }
 
-  const adjusted = raw * (0.5 + 0.5 * agreement);
-  return Math.min(Math.round(adjusted * 1000) / 1000, 1);
+  return groups;
 }
 
+// ── Per-signature scoring ──────────────────────────────────────────────────
+
+function scoreSignature(
+  group: SignatureGroup,
+  page: number,
+  index: number,
+): SignatureConfidence {
+  const methods = Array.from(group.methods);
+
+  // Primary method = highest-priority method in the group
+  const primaryMethod = METHOD_PRIORITY.slice().reverse().find(
+    (m) => group.methods.has(m),
+  )!;
+
+  // Base confidence from primary method
+  let confidence = METHOD_BASE[primaryMethod];
+
+  // +0.02 per additional corroborating method
+  const additionalMethods = methods.length - 1;
+  confidence += additionalMethods * AGREEMENT_BONUS;
+
+  // OCR-only hard cap
+  if (methods.length === 1 && methods[0] === 'ocr') {
+    confidence = Math.min(confidence, OCR_ONLY_CAP);
+  }
+
+  // Clamp to [0, 1]
+  confidence = Math.min(Math.round(confidence * 1000) / 1000, 1);
+
+  const reviewStatus =
+    confidence < MANUAL_REVIEW_THRESHOLD
+      ? 'Manual Review Recommended'
+      : 'Confident';
+
+  // Collect evidence from all hits in the group
+  const evidence = group.hits.flatMap((h) => h.evidence);
+
+  // Pick the best field name if any structural hit has one
+  const fieldName = group.hits.find((h) => h.fieldName)?.fieldName;
+
+  return {
+    signatureId: `p${page}-sig${index}${fieldName ? `-${fieldName}` : ''}`,
+    page,
+    confidence,
+    reviewStatus,
+    primaryMethod,
+    contributingMethods: methods,
+    boundingBox: group.boundingBox,
+    evidence,
+  };
+}
+
+// ── Method summary ─────────────────────────────────────────────────────────
+
 /**
- * Determine the boolean `detected` flag for the page.
- *
- * Detection is positive when:
- *   - Structural path detected (always trusted), OR
- *   - At least 2 non-structural paths detected, OR
- *   - Final confidence exceeds 0.35
+ * Derive a DetectionPathResult per method from the raw hits
+ * (backward-compatible summary for detection_methods[]).
  */
-function computeDetected(
-  results: DetectionPathResult[],
-  finalConfidence: number,
-): boolean {
-  const structural = results.find((r) => r.method === 'structural');
-  if (structural?.detected) return true;
-
-  const otherDetections = results.filter(
-    (r) => r.method !== 'structural' && r.detected,
-  ).length;
-  if (otherDetections >= 2) return true;
-
-  return finalConfidence >= 0.35;
+function summarizeMethods(
+  hits: DetectionHit[],
+): DetectionPathResult[] {
+  const allMethods: DetectionMethod[] = ['structural', 'annotation', 'keyword', 'ocr'];
+  return allMethods.map((method) => {
+    const methodHits = hits.filter((h) => h.method === method);
+    if (methodHits.length === 0) {
+      return {
+        method,
+        detected: false,
+        confidence: 0,
+        evidence: [],
+        boundingBox: null,
+      };
+    }
+    // Pick the best hit for the summary
+    const best = methodHits.reduce((a, b) =>
+      a.confidence >= b.confidence ? a : b,
+    );
+    return {
+      method,
+      detected: true,
+      confidence: best.confidence,
+      evidence: methodHits.flatMap((h) => h.evidence),
+      boundingBox: best.boundingBox,
+    };
+  });
 }
 
+// ── Page-level agreement ───────────────────────────────────────────────────
+
+function computeAgreement(signatures: SignatureConfidence[]): number {
+  if (signatures.length === 0) return 0;
+
+  // Agreement = how many distinct methods contributed across all signatures
+  const allMethods = new Set(signatures.flatMap((s) => s.contributingMethods));
+  // Normalize: 1 method = 0.25, 2 = 0.5, 3 = 0.75, 4 = 1.0
+  return Math.min(allMethods.size / 4, 1);
+}
+
+function computePageConfidence(signatures: SignatureConfidence[]): number {
+  if (signatures.length === 0) return 0;
+  // Page confidence = max confidence among its signatures
+  return Math.max(...signatures.map((s) => s.confidence));
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────
+
 /**
- * Cross-validate detection path results for a single page and
- * produce the final PageSignatureDetection.
+ * Cross-validate detection hits for a single page.
+ *
+ * Groups hits into per-signature candidates, scores each using
+ * the base-weight + agreement-bonus model, and produces the
+ * final PageSignatureDetection.
  */
 export function crossValidate(
   page: number,
-  results: DetectionPathResult[],
+  hits: DetectionHit[],
 ): PageSignatureDetection {
-  const agreement = computeAgreement(results);
-  const finalConfidence = computeFinalConfidence(results, agreement);
-  const detected = computeDetected(results, finalConfidence);
+  const groups = groupHits(hits);
+  const signatures = groups.map((g, idx) => scoreSignature(g, page, idx));
+  const detectionMethods = summarizeMethods(hits);
+
+  const agreement = computeAgreement(signatures);
+  const finalConfidence = computePageConfidence(signatures);
+  const detected = signatures.length > 0;
 
   return {
     page,
-    detection_methods: results,
+    detection_methods: detectionMethods,
+    signatures,
     detected,
     agreement_score: Math.round(agreement * 1000) / 1000,
     final_confidence_score: finalConfidence,

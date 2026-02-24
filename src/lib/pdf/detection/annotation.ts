@@ -1,13 +1,12 @@
 import type {
   PdfDeepParseResult,
-  DetectionPathResult,
   PdfBoundingBox,
+  DetectionHit,
 } from '@/types/pdf';
 
 /**
  * Minimum area (in PDF points squared) for an ink annotation
  * to be considered a plausible handwritten signature.
- * Filters out tiny stray marks and stamps.
  */
 const MIN_SIG_AREA = 400; // ~20x20 pt
 
@@ -34,35 +33,22 @@ function boxAspect(box: PdfBoundingBox): number {
 /**
  * Path 2: Annotation detection.
  *
- * Looks for ink annotations on the page that match the geometric
- * profile of a handwritten signature (reasonable size, landscape-ish
- * aspect ratio, has an appearance stream).
+ * Returns one DetectionHit per ink annotation on the page that
+ * passes geometric plausibility checks for a handwritten signature.
  */
 export function detectAnnotation(
   deepParse: PdfDeepParseResult,
   page: number,
-): DetectionPathResult {
-  const evidence: string[] = [];
-  let maxConfidence = 0;
-  let bestBox: DetectionPathResult['boundingBox'] = null;
+): DetectionHit[] {
+  const hits: DetectionHit[] = [];
 
   const inkOnPage = deepParse.inkAnnotations.filter(
     (a) => a.pageNumber === page,
   );
 
-  if (inkOnPage.length === 0) {
-    return {
-      method: 'annotation',
-      detected: false,
-      confidence: 0,
-      evidence: [],
-      boundingBox: null,
-    };
-  }
-
   for (const ink of inkOnPage) {
     let conf = 0.3; // base: something is drawn
-    const notes: string[] = ['Ink annotation'];
+    const evidence: string[] = ['Ink annotation'];
 
     if (ink.boundingBox) {
       const area = boxArea(ink.boundingBox);
@@ -70,47 +56,38 @@ export function detectAnnotation(
 
       if (area >= MIN_SIG_AREA && area <= MAX_SIG_AREA) {
         conf += 0.25;
-        notes.push(`area=${Math.round(area)}pt²`);
+        evidence.push(`area=${Math.round(area)}pt²`);
       } else {
-        // Outside typical size — less likely a signature
-        notes.push(`area=${Math.round(area)}pt² (atypical)`);
+        evidence.push(`area=${Math.round(area)}pt² (atypical)`);
       }
 
       if (aspect >= MIN_ASPECT && aspect <= MAX_ASPECT) {
         conf += 0.15;
-        notes.push(`aspect=${aspect.toFixed(1)}`);
+        evidence.push(`aspect=${aspect.toFixed(1)}`);
       }
 
-      // Position in lower portion of page often indicates signature area
-      // PDF coordinate origin is bottom-left; typical pages are ~792pt tall
+      // Lower portion of page often indicates signature area
       if (ink.boundingBox.y1 < 300 && ink.boundingBox.y2 < 400) {
         conf += 0.1;
-        notes.push('lower-page position');
+        evidence.push('lower-page position');
       }
     }
 
     if (ink.hasAppearanceStream) {
       conf += 0.15;
-      notes.push('has appearance stream');
+      evidence.push('has appearance stream');
     }
 
-    evidence.push(notes.join(', '));
-
-    if (conf > maxConfidence) {
-      maxConfidence = conf;
-      bestBox = ink.boundingBox;
+    // Only emit a hit if it passes the minimum plausibility bar
+    if (conf > 0.3) {
+      hits.push({
+        method: 'annotation',
+        confidence: Math.min(conf, 1),
+        boundingBox: ink.boundingBox,
+        evidence,
+      });
     }
   }
 
-  if (inkOnPage.length > 1) {
-    evidence.push(`${inkOnPage.length} ink annotations total`);
-  }
-
-  return {
-    method: 'annotation',
-    detected: maxConfidence > 0.3,
-    confidence: Math.min(maxConfidence, 1),
-    evidence,
-    boundingBox: bestBox,
-  };
+  return hits;
 }

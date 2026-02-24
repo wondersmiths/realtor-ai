@@ -52,7 +52,18 @@ export interface PdfDeepParseResult {
 
 export type DetectionMethod = 'structural' | 'annotation' | 'keyword' | 'ocr';
 
-/** Result from a single detection path on a single page. */
+export type ReviewStatus = 'Confident' | 'Manual Review Recommended';
+
+/** A single hit from one detection path — one per discrete signature candidate. */
+export interface DetectionHit {
+  method: DetectionMethod;
+  confidence: number;
+  boundingBox: PdfBoundingBox | null;
+  evidence: string[];
+  fieldName?: string;
+}
+
+/** Per-method summary derived from hits (kept for backward compat). */
 export interface DetectionPathResult {
   method: DetectionMethod;
   detected: boolean;
@@ -61,10 +72,23 @@ export interface DetectionPathResult {
   boundingBox: PdfBoundingBox | null;
 }
 
+/** Per-signature confidence with review status. */
+export interface SignatureConfidence {
+  signatureId: string;
+  page: number;
+  confidence: number;
+  reviewStatus: ReviewStatus;
+  primaryMethod: DetectionMethod;
+  contributingMethods: DetectionMethod[];
+  boundingBox: PdfBoundingBox | null;
+  evidence: string[];
+}
+
 /** Per-page signature detection with cross-validated scoring. */
 export interface PageSignatureDetection {
   page: number;
   detection_methods: DetectionPathResult[];
+  signatures: SignatureConfidence[];
   detected: boolean;
   agreement_score: number;
   final_confidence_score: number;
@@ -73,7 +97,9 @@ export interface PageSignatureDetection {
 /** Full result of multi-path signature detection across all pages. */
 export interface SignatureDetectionResult {
   pages: PageSignatureDetection[];
+  signatures: SignatureConfidence[];
   totalSignaturesDetected: number;
+  manualReviewCount: number;
   detectionSummary: {
     structuralCount: number;
     annotationCount: number;

@@ -1,5 +1,6 @@
 import type {
   PdfDeepParseResult,
+  DetectionHit,
   SignatureDetectionResult,
 } from '@/types/pdf';
 
@@ -12,7 +13,7 @@ import {
   crossValidate,
 } from './detection';
 
-const DETECTOR_VERSION = '1.0.0';
+const DETECTOR_VERSION = '2.0.0';
 
 /**
  * Split extracted text into per-page strings.
@@ -21,7 +22,6 @@ const DETECTOR_VERSION = '1.0.0';
 function splitTextByPage(text: string, pageCount: number): string[] {
   const parts = text.split('\f');
 
-  // Pad or trim to match actual page count
   const pages: string[] = [];
   for (let i = 0; i < pageCount; i++) {
     pages.push(parts[i] ?? '');
@@ -32,58 +32,69 @@ function splitTextByPage(text: string, pageCount: number): string[] {
 /**
  * Run multi-path signature detection on a PDF.
  *
- * Executes four independent detection paths per page:
- *   1. Structural (AcroForm /FT /Sig fields)          – weight 0.45
- *   2. Annotation (ink objects, geometric heuristics)  – weight 0.25
- *   3. Keyword + layout proximity (text patterns)      – weight 0.20
- *   4. OCR fallback (sparse-text / degraded patterns)  – weight 0.10
+ * Executes four independent detection paths per page, groups hits
+ * into per-signature candidates, and scores each using:
+ *   - AcroForm (structural) base = 0.99
+ *   - Annotation base = 0.95
+ *   - Multi-method agreement bonus = +0.02 per additional method
+ *   - OCR-only hard cap = 0.75
+ *   - Confidence < 0.85 → "Manual Review Recommended"
  *
- * Then cross-validates the results to produce agreement and confidence
- * scores per page.
- *
- * @param buffer    Raw PDF file bytes
- * @param extractedText  Text previously extracted by pdf-parse
- * @param deepParse Pre-computed deep parse result (avoids re-parsing)
+ * @param buffer        Raw PDF file bytes
+ * @param extractedText Text previously extracted by pdf-parse
+ * @param deepParse     Pre-computed deep parse result (avoids re-parsing)
  */
 export async function detectSignatures(
   buffer: Buffer,
   extractedText: string,
   deepParse?: PdfDeepParseResult,
 ): Promise<SignatureDetectionResult> {
-  // Reuse or compute deep parse
   const parsed = deepParse ?? await deepParsePdf(buffer);
   const pageCount = parsed.pageCount;
-
-  // Split text into per-page segments
   const pageTexts = splitTextByPage(extractedText, pageCount);
 
-  // Run all 4 detection paths per page, then cross-validate
   const summary = { structuralCount: 0, annotationCount: 0, keywordCount: 0, ocrCount: 0 };
   const pages = [];
+  let manualReviewCount = 0;
 
   for (let i = 0; i < pageCount; i++) {
     const pageNum = i + 1;
     const text = pageTexts[i];
 
-    const structural = detectStructural(parsed, pageNum);
-    const annotation = detectAnnotation(parsed, pageNum);
-    const keyword    = detectKeyword(text, pageNum);
-    const ocr        = detectOcr(text, parsed, pageNum);
+    // Collect all hits from the four detection paths
+    const allHits: DetectionHit[] = [
+      ...detectStructural(parsed, pageNum),
+      ...detectAnnotation(parsed, pageNum),
+      ...detectKeyword(text, pageNum),
+      ...detectOcr(text, parsed, pageNum),
+    ];
 
-    const result = crossValidate(pageNum, [structural, annotation, keyword, ocr]);
+    const result = crossValidate(pageNum, allHits);
     pages.push(result);
 
+    // Tally per-method counts (only for pages with detections)
     if (result.detected) {
-      if (structural.detected)  summary.structuralCount++;
-      if (annotation.detected)  summary.annotationCount++;
-      if (keyword.detected)     summary.keywordCount++;
-      if (ocr.detected)         summary.ocrCount++;
+      const methods = new Set(result.signatures.flatMap((s) => s.contributingMethods));
+      if (methods.has('structural'))  summary.structuralCount++;
+      if (methods.has('annotation'))  summary.annotationCount++;
+      if (methods.has('keyword'))     summary.keywordCount++;
+      if (methods.has('ocr'))         summary.ocrCount++;
     }
+
+    // Count signatures needing manual review
+    manualReviewCount += result.signatures.filter(
+      (s) => s.reviewStatus === 'Manual Review Recommended',
+    ).length;
   }
+
+  // Flatten all signatures across pages for top-level access
+  const allSignatures = pages.flatMap((p) => p.signatures);
 
   return {
     pages,
-    totalSignaturesDetected: pages.filter((p) => p.detected).length,
+    signatures: allSignatures,
+    totalSignaturesDetected: allSignatures.length,
+    manualReviewCount,
     detectionSummary: summary,
     detectorVersion: DETECTOR_VERSION,
     detectedAt: new Date().toISOString(),
