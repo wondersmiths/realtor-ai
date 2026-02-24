@@ -11,6 +11,7 @@ export interface DocumentReviewJob {
   orgId: string;
   userId: string;
   filePath: string;
+  fileHash?: string;
 }
 
 /**

@@ -1,11 +1,13 @@
 import 'server-only';
 
+import { createHash } from 'crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import type { Document } from '@/types/database';
 import { DocumentStatus } from '@/types/enums';
 import type { DocumentWithUploader } from '@/types/domain';
 import type { PaginationParams, PaginatedResponse } from '@/types/api';
 import { NotFoundError, AppError, ValidationError } from '@/lib/errors';
+import { enqueueDocumentReview } from '@/lib/queue/producer';
 
 const STORAGE_BUCKET = 'documents';
 
@@ -132,14 +134,37 @@ export class DocumentService {
     file: File,
     options: { listingId?: string; metadata?: Record<string, unknown> } = {}
   ): Promise<Document> {
+    // Read file into buffer once for hashing and upload
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+
+    // Compute SHA256 hash
+    const fileHash = createHash('sha256').update(fileBuffer).digest('hex');
+
+    // Check for duplicate file in this org
+    const { data: existing } = await this.supabase
+      .from('documents')
+      .select('id, name')
+      .eq('organization_id', orgId)
+      .eq('file_hash', fileHash)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      throw new ValidationError(
+        `A duplicate file already exists: "${existing.name}"`,
+        { file: ['This file has already been uploaded to your organization'] }
+      );
+    }
+
     // Generate a temporary ID for the file path
     const tempId = crypto.randomUUID();
     const filePath = `${orgId}/${tempId}/${file.name}`;
 
-    // Upload to Supabase Storage
+    // Upload buffer to Supabase Storage
     const { error: storageError } = await this.supabase.storage
       .from(STORAGE_BUCKET)
-      .upload(filePath, file, {
+      .upload(filePath, fileBuffer, {
         contentType: file.type,
         upsert: false,
       });
@@ -160,8 +185,13 @@ export class DocumentService {
         file_path: filePath,
         file_type: file.type,
         file_size: file.size,
+        file_hash: fileHash,
         status: DocumentStatus.Pending,
-        metadata: options.metadata || {},
+        metadata: {
+          ...options.metadata,
+          originalName: file.name,
+          sizeBytes: file.size,
+        },
       })
       .select('*')
       .single();
@@ -170,6 +200,19 @@ export class DocumentService {
       // Attempt cleanup of the uploaded file
       await this.supabase.storage.from(STORAGE_BUCKET).remove([filePath]);
       throw new AppError(`Failed to create document record: ${dbError?.message}`);
+    }
+
+    // Fire-and-forget: enqueue background compliance review
+    try {
+      await enqueueDocumentReview({
+        documentId: tempId,
+        orgId,
+        userId: uploadedBy,
+        filePath,
+        fileHash,
+      });
+    } catch (err) {
+      console.warn('[DocumentService] Failed to enqueue review job:', err);
     }
 
     return data as Document;

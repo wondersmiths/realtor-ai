@@ -33,6 +33,7 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
     .eq('id', documentId);
 
   let extractedText = '';
+  let pageCount: number | undefined;
 
   try {
     // 1. Download file from Supabase Storage
@@ -53,6 +54,7 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
       const pdfParse = (pdfParseModule as any).default || pdfParseModule;
       const pdfResult = await pdfParse(buffer);
       extractedText = pdfResult.text;
+      pageCount = pdfResult.numpages;
     } else if (extension === 'docx') {
       const mammoth = await import('mammoth');
       const mammothResult = await mammoth.extractRawText({ buffer });
@@ -68,11 +70,25 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
       throw new Error('No text could be extracted from the document');
     }
 
-    // Store extracted text on the document record
+    // Fetch current metadata and merge page count + text length
+    const { data: currentDoc } = await (supabase as any)
+      .from('documents')
+      .select('metadata')
+      .eq('id', documentId)
+      .single();
+
+    const mergedMetadata = {
+      ...(currentDoc?.metadata ?? {}),
+      pageCount,
+      extractedTextLength: extractedText.length,
+    };
+
+    // Store extracted text and updated metadata on the document record
     await (supabase as any)
       .from('documents')
       .update({
         extracted_text: extractedText.slice(0, 100000), // Limit storage
+        metadata: mergedMetadata,
         updated_at: new Date().toISOString(),
       })
       .eq('id', documentId);

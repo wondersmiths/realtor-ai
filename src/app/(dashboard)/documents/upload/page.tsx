@@ -142,7 +142,7 @@ export default function UploadDocumentPage() {
               <FileUpload
                 onFileSelect={handleFileSelect}
                 accept={['.pdf', '.doc', '.docx', '.txt', '.rtf', 'application/pdf']}
-                maxSize={25 * 1024 * 1024} // 25MB
+                maxSize={50 * 1024 * 1024} // 50MB
                 disabled={isUploading}
               />
             </div>

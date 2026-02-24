@@ -91,6 +91,7 @@ export interface Document {
   file_path: string;
   file_type: string;
   file_size: number;
+  file_hash: string | null;
   status: DocumentStatus;
   extracted_text: string | null;
   review_score: number | null;
