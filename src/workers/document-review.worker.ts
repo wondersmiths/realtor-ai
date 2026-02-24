@@ -5,6 +5,8 @@ import { ComplianceService } from '@/services/compliance.service';
 import { DocumentStatus, ComplianceCheckType, ComplianceCheckStatus } from '@/types/enums';
 import { enqueueNotification } from '@/lib/queue/producer';
 import type { DocumentReviewJob } from '@/lib/queue/jobs';
+import { deepParsePdf } from '@/lib/pdf';
+import type { PdfDeepParseResult } from '@/types/pdf';
 
 /**
  * Document review processor.
@@ -34,6 +36,7 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
 
   let extractedText = '';
   let pageCount: number | undefined;
+  let deepParseResult: PdfDeepParseResult | null = null;
 
   try {
     // 1. Download file from Supabase Storage
@@ -55,6 +58,16 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
       const pdfResult = await pdfParse(buffer);
       extractedText = pdfResult.text;
       pageCount = pdfResult.numpages;
+
+      // Deep-parse PDF structure (non-fatal — log warning on failure)
+      try {
+        deepParseResult = await deepParsePdf(buffer);
+      } catch (deepParseErr) {
+        console.warn(
+          `[DocumentReviewWorker] Deep PDF parse failed for ${documentId}:`,
+          deepParseErr instanceof Error ? deepParseErr.message : deepParseErr,
+        );
+      }
     } else if (extension === 'docx') {
       const mammoth = await import('mammoth');
       const mammothResult = await mammoth.extractRawText({ buffer });
@@ -81,6 +94,7 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
       ...(currentDoc?.metadata ?? {}),
       pageCount,
       extractedTextLength: extractedText.length,
+      ...(deepParseResult ? { pdfStructure: deepParseResult } : {}),
     };
 
     // Store extracted text and updated metadata on the document record
