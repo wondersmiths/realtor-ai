@@ -82,6 +82,8 @@ export type PlanNameKey = keyof typeof PLAN_NAMES;
 // File Upload Constraints
 // ──────────────────────────────────────────────
 export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB in bytes
+export const MLS_FILE_SIZE_THRESHOLD = 5 * 1024 * 1024; // 5 MB — typical MLS upload limit
+export const PDF_SPLIT_MAX_PAGES_PER_PART = 50;
 
 export const ALLOWED_FILE_TYPES = [
   'application/pdf',

@@ -5,8 +5,9 @@ import { ComplianceService } from '@/services/compliance.service';
 import { DocumentStatus, ComplianceCheckType, ComplianceCheckStatus } from '@/types/enums';
 import { enqueueNotification } from '@/lib/queue/producer';
 import type { DocumentReviewJob } from '@/lib/queue/jobs';
-import { deepParsePdf, detectSignatures } from '@/lib/pdf';
-import type { PdfDeepParseResult, SignatureDetectionResult } from '@/types/pdf';
+import { deepParsePdf, detectSignatures, optimizePdf } from '@/lib/pdf';
+import { MLS_FILE_SIZE_THRESHOLD } from '@/lib/constants';
+import type { PdfDeepParseResult, SignatureDetectionResult, PdfOptimizationResult, PdfOptimizationMetadata } from '@/types/pdf';
 
 /**
  * Document review processor.
@@ -38,6 +39,7 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
   let pageCount: number | undefined;
   let deepParseResult: PdfDeepParseResult | null = null;
   let signatureDetection: SignatureDetectionResult | null = null;
+  let optimizationResult: PdfOptimizationResult | null = null;
 
   try {
     // 1. Download file from Supabase Storage
@@ -79,6 +81,18 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
           sigDetectErr instanceof Error ? sigDetectErr.message : sigDetectErr,
         );
       }
+
+      // PDF optimization — analyze, compress, split if needed (non-fatal)
+      try {
+        optimizationResult = await optimizePdf(buffer, {
+          thresholdBytes: MLS_FILE_SIZE_THRESHOLD,
+        });
+      } catch (optimizeErr) {
+        console.warn(
+          `[DocumentReviewWorker] PDF optimization failed for ${documentId}:`,
+          optimizeErr instanceof Error ? optimizeErr.message : optimizeErr,
+        );
+      }
     } else if (extension === 'docx') {
       const mammoth = await import('mammoth');
       const mammothResult = await mammoth.extractRawText({ buffer });
@@ -101,12 +115,77 @@ export async function processDocumentReview(job: Job<DocumentReviewJob>): Promis
       .eq('id', documentId)
       .single();
 
+    // Build serializable optimization metadata (strip Buffers) and upload split parts
+    let optimizationMeta: PdfOptimizationMetadata | null = null;
+    if (optimizationResult) {
+      const splitPartPaths: string[] = [];
+
+      // Upload split parts to Supabase Storage if splitting occurred
+      if (optimizationResult.split && optimizationResult.split.parts.length > 1) {
+        for (let i = 0; i < optimizationResult.split.parts.length; i++) {
+          const part = optimizationResult.split.parts[i];
+          const partPath = `${orgId}/${documentId}/split/part-${i + 1}.pdf`;
+          try {
+            await (supabase as any).storage
+              .from('documents')
+              .upload(partPath, part.buffer, {
+                contentType: 'application/pdf',
+                upsert: true,
+              });
+            splitPartPaths.push(partPath);
+          } catch (uploadErr) {
+            console.warn(
+              `[DocumentReviewWorker] Failed to upload split part ${i + 1} for ${documentId}:`,
+              uploadErr instanceof Error ? uploadErr.message : uploadErr,
+            );
+          }
+        }
+      }
+
+      optimizationMeta = {
+        analysis: optimizationResult.analysis,
+        compression: optimizationResult.compression
+          ? {
+              originalSizeBytes: optimizationResult.compression.originalSizeBytes,
+              compressedSizeBytes: optimizationResult.compression.compressedSizeBytes,
+              compressionRatio: optimizationResult.compression.compressionRatio,
+              usedObjectStreams: optimizationResult.compression.usedObjectStreams,
+              strippedMetadata: optimizationResult.compression.strippedMetadata,
+              meetsThreshold: optimizationResult.compression.meetsThreshold,
+            }
+          : null,
+        split: optimizationResult.split
+          ? {
+              totalParts: optimizationResult.split.totalParts,
+              originalPageCount: optimizationResult.split.originalPageCount,
+              originalSizeBytes: optimizationResult.split.originalSizeBytes,
+              allPartsUnderThreshold: optimizationResult.split.allPartsUnderThreshold,
+              splitMode: optimizationResult.split.splitMode,
+              parts: optimizationResult.split.parts.map((p) => ({
+                startPage: p.startPage,
+                endPage: p.endPage,
+                pageCount: p.pageCount,
+                sizeBytes: p.sizeBytes,
+                label: p.label,
+              })),
+            }
+          : null,
+        finalSizeBytes: optimizationResult.finalSizeBytes,
+        meetsThreshold: optimizationResult.meetsThreshold,
+        actionTaken: optimizationResult.actionTaken,
+        ...(splitPartPaths.length > 0 ? { splitPartPaths } : {}),
+        version: optimizationResult.version,
+        timestamp: optimizationResult.timestamp,
+      };
+    }
+
     const mergedMetadata = {
       ...(currentDoc?.metadata ?? {}),
       pageCount,
       extractedTextLength: extractedText.length,
       ...(deepParseResult ? { pdfStructure: deepParseResult } : {}),
       ...(signatureDetection ? { signatureDetection } : {}),
+      ...(optimizationMeta ? { optimization: optimizationMeta } : {}),
     };
 
     // Store extracted text and updated metadata on the document record

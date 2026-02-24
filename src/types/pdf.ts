@@ -109,3 +109,109 @@ export interface SignatureDetectionResult {
   detectorVersion: string;
   detectedAt: string;
 }
+
+// ── PDF Optimization Engine ─────────────────────────────────────────────────
+
+export type PdfOptimizationRecommendation =
+  | 'none'
+  | 'compress'
+  | 'split'
+  | 'compress_and_split';
+
+/** Metadata fields extracted from the PDF Info dictionary. */
+export interface PdfMetadataInfo {
+  title: string | null;
+  author: string | null;
+  subject: string | null;
+  keywords: string | null;
+  creator: string | null;
+  producer: string | null;
+  creationDate: string | null;
+  modificationDate: string | null;
+  estimatedSizeBytes: number;
+}
+
+/** Analysis result describing the PDF's current state relative to a size threshold. */
+export interface PdfOptimizationAnalysis {
+  originalSizeBytes: number;
+  pageCount: number;
+  isEncrypted: boolean;
+  metadata: PdfMetadataInfo;
+  thresholdBytes: number;
+  exceedsThreshold: boolean;
+  recommendation: PdfOptimizationRecommendation;
+  reason: string;
+}
+
+/** Result of compressing a PDF buffer. */
+export interface PdfCompressionResult {
+  buffer: Buffer;
+  originalSizeBytes: number;
+  compressedSizeBytes: number;
+  compressionRatio: number;
+  usedObjectStreams: boolean;
+  strippedMetadata: boolean;
+  meetsThreshold: boolean;
+}
+
+/** A single part produced by splitting a PDF. */
+export interface PdfSplitPart {
+  buffer: Buffer;
+  startPage: number;
+  endPage: number;
+  pageCount: number;
+  sizeBytes: number;
+  label: string;
+}
+
+/** Result of splitting a PDF into multiple parts. */
+export interface PdfSplitResult {
+  parts: PdfSplitPart[];
+  totalParts: number;
+  originalPageCount: number;
+  originalSizeBytes: number;
+  allPartsUnderThreshold: boolean;
+  splitMode: 'auto' | 'user-specified';
+}
+
+/** Full optimization result combining analysis, compression, and optional split. */
+export interface PdfOptimizationResult {
+  analysis: PdfOptimizationAnalysis;
+  compression: PdfCompressionResult | null;
+  split: PdfSplitResult | null;
+  optimizedBuffer: Buffer;
+  finalSizeBytes: number;
+  meetsThreshold: boolean;
+  actionTaken: PdfOptimizationRecommendation;
+  version: string;
+  timestamp: string;
+}
+
+/** Options for the optimization engine. */
+export interface PdfOptimizationOptions {
+  thresholdBytes?: number;
+  splitAtPages?: number[];
+  maxPagesPerPart?: number;
+  analyzeOnly?: boolean;
+  skipSplit?: boolean;
+}
+
+/** Serializable subset of PdfOptimizationResult (no Buffers) for JSON storage. */
+export interface PdfOptimizationMetadata {
+  analysis: PdfOptimizationAnalysis;
+  compression: Omit<PdfCompressionResult, 'buffer'> | null;
+  split: {
+    totalParts: number;
+    originalPageCount: number;
+    originalSizeBytes: number;
+    allPartsUnderThreshold: boolean;
+    splitMode: 'auto' | 'user-specified';
+    parts: Omit<PdfSplitPart, 'buffer'>[];
+  } | null;
+  finalSizeBytes: number;
+  meetsThreshold: boolean;
+  actionTaken: PdfOptimizationRecommendation;
+  splitPartPaths?: string[];
+  version: string;
+  timestamp: string;
+}
