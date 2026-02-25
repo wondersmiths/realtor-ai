@@ -13,6 +13,10 @@ const envSchema = z.object({
   REDIS_URL: z.string().optional().default('redis://localhost:6379'),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   AI_ENABLED: z.string().default('true').transform(v => v === 'true'),
+  AI_MODEL_FAST: z.string().min(1).optional(),
+  AI_MODEL_STANDARD: z.string().min(1).optional(),
+  AI_MODEL_PREMIUM: z.string().min(1).optional(),
+  AI_MODEL_FALLBACK: z.string().min(1).optional(),
   RESEND_API_KEY: z.string().min(1).optional(),
   FROM_EMAIL: z.string().email().default('noreply@realtorai.com'),
 });

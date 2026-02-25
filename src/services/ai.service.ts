@@ -68,17 +68,35 @@ const DEFAULT_MAX_INPUT_CHARS = 15000;
 // Model routing
 // ──────────────────────────────────────────────
 
-type ModelTier = 'fast' | 'standard';
+type ModelTier = 'fast' | 'standard' | 'premium';
 
-const MODEL_TIER_MAP: Record<ModelTier, string> = {
+const MODEL_TIER_RANK: ModelTier[] = ['fast', 'standard', 'premium'];
+
+const DEFAULT_MODEL_TIER_MAP: Record<ModelTier, string> = {
   fast: 'claude-haiku-4-20250514',
   standard: 'claude-sonnet-4-20250514',
+  premium: 'claude-opus-4-20250514',
 };
+
+function buildModelTierMap(): Record<ModelTier, string> {
+  return {
+    fast: process.env.AI_MODEL_FAST || DEFAULT_MODEL_TIER_MAP.fast,
+    standard: process.env.AI_MODEL_STANDARD || DEFAULT_MODEL_TIER_MAP.standard,
+    premium: process.env.AI_MODEL_PREMIUM || DEFAULT_MODEL_TIER_MAP.premium,
+  };
+}
+
+const MODEL_TIER_MAP = buildModelTierMap();
+
+const FALLBACK_MODEL_ID = process.env.AI_MODEL_FALLBACK || DEFAULT_MODEL_TIER_MAP.fast;
 
 const OPERATION_MODEL_TIER: Record<string, ModelTier> = {
   document_classification: 'fast',
-  compliance_explanation: 'fast',
-  // All other operations default to 'standard'
+  compliance_explanation: 'standard',
+  document_review: 'standard',
+  fair_housing_check: 'standard',
+  listing_compliance: 'standard',
+  risk_prediction: 'premium',
 };
 
 // Credit cost per operation type
@@ -92,13 +110,16 @@ const OPERATION_CREDIT_COST: Record<string, number> = {
   batch_process: 5,
 };
 
-function resolveModel(operation: string): string {
-  const tier = OPERATION_MODEL_TIER[operation] || 'standard';
-  return MODEL_TIER_MAP[tier];
+function resolveModel(operation: string, downgradeSteps = 0): string {
+  const baseTier = OPERATION_MODEL_TIER[operation] || 'standard';
+  const baseIndex = MODEL_TIER_RANK.indexOf(baseTier);
+  const downgradedIndex = Math.max(0, baseIndex - downgradeSteps);
+  return MODEL_TIER_MAP[MODEL_TIER_RANK[downgradedIndex]];
 }
 
 // Cost per 1K tokens in cents, keyed by model
 const MODEL_COSTS: Record<string, { input: number; output: number }> = {
+  'claude-opus-4-20250514': { input: 1.5, output: 7.5 },
   'claude-sonnet-4-20250514': { input: 0.3, output: 1.5 },
   'claude-haiku-4-20250514': { input: 0.08, output: 0.4 },
 };
@@ -181,7 +202,8 @@ export class AIService {
   async executeAICall<T>(options: ExecuteAICallOptions<T>): Promise<AIResult<T>> {
     const { orgId, userId, operation, promptBuilder, responseSchema, fallbackFn, maxInputChars } = options;
     const startTime = Date.now();
-    const model = resolveModel(operation);
+    let downgradeSteps = 0;
+    let model = resolveModel(operation, 0);
 
     // 1. Check global AI_ENABLED env var
     const aiEnabled = process.env.AI_ENABLED !== 'false';
@@ -239,7 +261,7 @@ export class AIService {
       // No quota record found - proceed (org may not have quotas configured)
     }
 
-    // 4. Check cost limits
+    // 4. Check cost limits & compute cost-aware downgrade
     try {
       const { data: costLimit } = await this.supabase
         .from('ai_cost_limits')
@@ -250,41 +272,73 @@ export class AIService {
       if (costLimit) {
         const typedCostLimit = costLimit as AICostLimit;
 
+        // Fetch monthly spend
+        const monthStart = new Date();
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+
+        const { data: monthlyUsage } = await this.supabase
+          .from('ai_usage')
+          .select('cost_cents')
+          .eq('organization_id', orgId)
+          .gte('created_at', monthStart.toISOString());
+
+        const totalSpent = (monthlyUsage || []).reduce(
+          (sum: number, row: any) => sum + (row.cost_cents || 0),
+          0
+        );
+
+        // Fetch daily spend
+        const dayStart = new Date();
+        dayStart.setHours(0, 0, 0, 0);
+
+        const { data: dailyUsage } = await this.supabase
+          .from('ai_usage')
+          .select('cost_cents')
+          .eq('organization_id', orgId)
+          .gte('created_at', dayStart.toISOString());
+
+        const dailySpent = (dailyUsage || []).reduce(
+          (sum: number, row: any) => sum + (row.cost_cents || 0),
+          0
+        );
+
+        // Cost-aware downgrade based on monthly soft limit
+        if (typedCostLimit.monthly_soft_limit_cents > 0) {
+          const spendPct = (totalSpent / typedCostLimit.monthly_soft_limit_cents) * 100;
+          if (spendPct >= 100) {
+            downgradeSteps = 2;
+          } else if (spendPct >= typedCostLimit.alert_threshold_pct) {
+            downgradeSteps = 1;
+          }
+        }
+
+        // Cost-aware downgrade based on daily hard limit
+        if (typedCostLimit.daily_hard_limit_cents > 0) {
+          const dailyPct = (dailySpent / typedCostLimit.daily_hard_limit_cents) * 100;
+          if (dailyPct >= 95) {
+            downgradeSteps = Math.max(downgradeSteps, 2);
+          } else if (dailyPct >= 80) {
+            downgradeSteps = Math.max(downgradeSteps, 1);
+          }
+        }
+
+        // Re-resolve model if downgraded
+        if (downgradeSteps > 0) {
+          const previousModel = model;
+          model = resolveModel(operation, downgradeSteps);
+          if (model !== previousModel) {
+            console.log(
+              `[AIService] Cost-aware downgrade: ${operation} ${previousModel} → ${model} (downgradeSteps=${downgradeSteps})`
+            );
+          }
+        }
+
+        // Hard-limit bail-outs
         if (typedCostLimit.is_hard_limited) {
-          // Check monthly spend
-          const monthStart = new Date();
-          monthStart.setDate(1);
-          monthStart.setHours(0, 0, 0, 0);
-
-          const { data: monthlyUsage } = await this.supabase
-            .from('ai_usage')
-            .select('cost_cents')
-            .eq('organization_id', orgId)
-            .gte('created_at', monthStart.toISOString());
-
-          const totalSpent = (monthlyUsage || []).reduce(
-            (sum: number, row: any) => sum + (row.cost_cents || 0),
-            0
-          );
-
           if (totalSpent >= typedCostLimit.monthly_hard_limit_cents) {
             return this.buildFallbackResult(fallbackFn(), 'Monthly AI cost limit reached');
           }
-
-          // Check daily spend
-          const dayStart = new Date();
-          dayStart.setHours(0, 0, 0, 0);
-
-          const { data: dailyUsage } = await this.supabase
-            .from('ai_usage')
-            .select('cost_cents')
-            .eq('organization_id', orgId)
-            .gte('created_at', dayStart.toISOString());
-
-          const dailySpent = (dailyUsage || []).reduce(
-            (sum: number, row: any) => sum + (row.cost_cents || 0),
-            0
-          );
 
           if (dailySpent >= typedCostLimit.daily_hard_limit_cents) {
             return this.buildFallbackResult(fallbackFn(), 'Daily AI cost limit reached');
@@ -376,10 +430,33 @@ export class AIService {
       }
     }
 
+    // 7b. Fallback model attempt if primary model failed
+    if (!response && model !== FALLBACK_MODEL_ID) {
+      console.log(
+        `[AIService] Primary model failed for ${operation}, attempting fallback: ${FALLBACK_MODEL_ID}`
+      );
+      try {
+        response = await client.messages.create({
+          model: FALLBACK_MODEL_ID,
+          max_tokens: 4096,
+          system: prompts.system,
+          messages: [
+            {
+              role: 'user',
+              content: prompts.user,
+            },
+          ],
+        });
+        model = FALLBACK_MODEL_ID;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+
     const latencyMs = Date.now() - startTime;
 
     if (!response) {
-      // All retries failed
+      // All retries and fallback failed
       await this.trackUsage(orgId, userId || null, operation, {
         status: AIUsageStatus.Error,
         errorMessage: lastError?.message || 'All retries failed',
