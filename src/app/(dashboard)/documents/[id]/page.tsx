@@ -147,6 +147,12 @@ export default function DocumentDetailPage() {
   const findings = (document.review_findings ?? []) as ComplianceFinding[];
   const isReviewed = document.status === 'reviewed' || document.status === 'flagged' || document.status === 'approved';
 
+  const signatureDetection = document.metadata?.signatureDetection as {
+    totalSignaturesDetected?: number;
+    manualReviewCount?: number;
+    reportSummary?: string;
+  } | undefined;
+
   const scoreColor =
     document.review_score !== null
       ? document.review_score >= 80
@@ -314,6 +320,42 @@ export default function DocumentDetailPage() {
                     );
                   })}
                 </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Signature Detection */}
+      {signatureDetection && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Signature Detection</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-4 grid gap-4 sm:grid-cols-2">
+              <div>
+                <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                  Signatures Detected
+                </p>
+                <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {signatureDetection.totalSignaturesDetected ?? 0}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                  Manual Review Needed
+                </p>
+                <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {signatureDetection.manualReviewCount ?? 0}
+                </p>
+              </div>
+            </div>
+            {signatureDetection.reportSummary && (
+              <div className="rounded-lg bg-blue-50 p-4 dark:bg-blue-900/20">
+                <p className="whitespace-pre-line text-sm text-blue-800 dark:text-blue-200">
+                  {signatureDetection.reportSummary}
+                </p>
               </div>
             )}
           </CardContent>

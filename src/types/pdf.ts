@@ -108,6 +108,7 @@ export interface SignatureDetectionResult {
   };
   detectorVersion: string;
   detectedAt: string;
+  reportSummary: string;
 }
 
 // ── PDF Optimization Engine ─────────────────────────────────────────────────

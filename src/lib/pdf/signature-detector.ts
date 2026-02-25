@@ -12,6 +12,7 @@ import {
   detectOcr,
   crossValidate,
 } from './detection';
+import { SIGNATURE_REPORT_MESSAGES } from '@/lib/constants';
 
 const DETECTOR_VERSION = '2.0.0';
 
@@ -90,6 +91,12 @@ export async function detectSignatures(
   // Flatten all signatures across pages for top-level access
   const allSignatures = pages.flatMap((p) => p.signatures);
 
+  const reportSummary = [
+    SIGNATURE_REPORT_MESSAGES.completed,
+    SIGNATURE_REPORT_MESSAGES.flagged,
+    SIGNATURE_REPORT_MESSAGES.humanReview,
+  ].join('\n');
+
   return {
     pages,
     signatures: allSignatures,
@@ -98,5 +105,6 @@ export async function detectSignatures(
     detectionSummary: summary,
     detectorVersion: DETECTOR_VERSION,
     detectedAt: new Date().toISOString(),
+    reportSummary,
   };
 }

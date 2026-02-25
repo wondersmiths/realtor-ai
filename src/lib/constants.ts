@@ -104,6 +104,15 @@ export interface NavItem {
   requiredRole?: RoleKey;
 }
 
+// ──────────────────────────────────────────────
+// Signature Report Messages
+// ──────────────────────────────────────────────
+export const SIGNATURE_REPORT_MESSAGES = {
+  completed: 'Automated signature detection completed.',
+  flagged: 'Pages flagged for manual review are indicated.',
+  humanReview: 'Final compliance verification requires human review.',
+} as const;
+
 export const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: 'LayoutDashboard' },
   { href: '/dashboard/listings', label: 'Listings', icon: 'Home' },
