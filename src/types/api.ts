@@ -366,6 +366,45 @@ export interface UpdateAnomalyFlagRequest {
 // ──────────────────────────────────────────────
 // Detection Feedback
 // ──────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// Compliance Tracker Dashboard
+// ──────────────────────────────────────────────
+export interface ComplianceTrackerData {
+  uploads: {
+    total: number;
+    byFileType: Record<string, number>;
+  };
+  detections: {
+    total: number;
+    reviewed: number;
+    avgConfidence: number;
+    confidenceBuckets: { label: string; count: number }[];
+  };
+  aiCalls: {
+    total: number;
+    totalCostCents: number;
+    byOperation: { operation: string; calls: number; costCents: number }[];
+    errorCount: number;
+  };
+  guardrails: {
+    total: number;
+    open: number;
+    byType: Record<string, number>;
+    bySeverity: Record<string, number>;
+  };
+  overrides: {
+    total: number;
+    resolved: number;
+    byErrorType: Record<string, number>;
+  };
+  dailyTrends: {
+    date: string;
+    uploads: number;
+    aiCalls: number;
+    guardrailTriggers: number;
+  }[];
+}
+
 export interface SubmitDetectionFeedbackRequest {
   detection_result_id: string;
   error_type: 'false_positive' | 'missed_signature';

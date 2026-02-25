@@ -20,6 +20,8 @@
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "ioredis": "^5.9.3",
+    "jspdf": "^4.2.0",
+    "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.575.0",
     "mammoth": "^1.11.0",
     "next": "14.2.35",

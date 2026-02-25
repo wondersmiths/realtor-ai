@@ -127,4 +127,5 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard/ai-analytics', label: 'AI Analytics', icon: 'BrainCircuit', requiredRole: 'admin' },
   { href: '/dashboard/evaluations', label: 'Evaluations', icon: 'FlaskConical', requiredRole: 'admin' },
   { href: '/dashboard/anomaly-flags', label: 'Anomaly Flags', icon: 'ShieldAlert', requiredRole: 'admin' },
+  { href: '/dashboard/compliance-tracker', label: 'Compliance Tracker', icon: 'ClipboardCheck', requiredRole: 'admin' },
 ];
