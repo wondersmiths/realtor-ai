@@ -31,6 +31,16 @@ export const apiLimiter = createLimiter({ requests: 100, window: '60 s' }, 'api'
 export const aiLimiter = createLimiter({ requests: 20, window: '60 s' }, 'ai');
 
 /**
+ * AI per-user rate limiter: 10 AI calls per 60 seconds per user.
+ */
+export const aiUserLimiter = createLimiter({ requests: 10, window: '60 s' }, 'ai-user');
+
+/**
+ * Document per-org rate limiter: 100 documents per hour per organization.
+ */
+export const docOrgLimiter = createLimiter({ requests: 100, window: '3600 s' }, 'doc-org');
+
+/**
  * Auth rate limiter: 5 requests per 60 seconds per IP.
  */
 export const authLimiter = createLimiter({ requests: 5, window: '60 s' }, 'auth');

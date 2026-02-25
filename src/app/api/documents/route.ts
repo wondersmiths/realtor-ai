@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { DocumentService } from '@/services/document.service';
 import { AppError } from '@/lib/errors';
 import type { DocumentStatus } from '@/types/enums';
+import { docOrgLimiter, checkRateLimit } from '@/lib/redis/rate-limiter';
 
 /**
  * GET /api/documents
@@ -88,6 +89,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: { message: 'Missing x-org-id header', code: 'BAD_REQUEST', statusCode: 400 } },
         { status: 400 }
+      );
+    }
+
+    // Check document rate limit (100 documents / hour / org)
+    const { success: withinDocLimit } = await checkRateLimit(docOrgLimiter, orgId);
+    if (!withinDocLimit) {
+      return NextResponse.json(
+        { error: { message: 'Rate limit exceeded: max 100 documents per hour per organization', code: 'QUOTA_EXCEEDED', statusCode: 429 } },
+        { status: 429 }
       );
     }
 

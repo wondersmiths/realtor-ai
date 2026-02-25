@@ -11,6 +11,7 @@ import type {
   ComplianceCheckFindingJSON,
 } from '@/types/database';
 import { AIUsageStatus, AuditAction } from '@/types/enums';
+import { QuotaExceededError } from '@/lib/errors';
 import { AuditService } from '@/services/audit.service';
 import { NotificationService } from '@/services/notification.service';
 import type {
@@ -27,7 +28,7 @@ import {
   riskPredictionResultSchema,
 } from '@/lib/ai/schemas';
 import { prepareInput } from '@/lib/ai/preprocessing';
-import { aiLimiter, checkRateLimit } from '@/lib/redis/rate-limiter';
+import { aiLimiter, aiUserLimiter, checkRateLimit } from '@/lib/redis/rate-limiter';
 import { createHash } from 'crypto';
 
 // ──────────────────────────────────────────────
@@ -238,11 +239,20 @@ export class AIService {
       return this.buildFallbackResult(fallbackFn(), 'Failed to verify org AI settings');
     }
 
-    // 2b. Check rate limit
-    const { success: withinLimit } = await checkRateLimit(aiLimiter, orgId);
-    if (!withinLimit) {
+    // 2b. Check org rate limit
+    const { success: withinOrgLimit } = await checkRateLimit(aiLimiter, orgId);
+    if (!withinOrgLimit) {
       this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
       return this.buildFallbackResult(fallbackFn(), 'AI rate limit exceeded');
+    }
+
+    // 2c. Check per-user rate limit (10 AI calls / minute / user)
+    if (userId) {
+      const { success: withinUserLimit } = await checkRateLimit(aiUserLimiter, userId);
+      if (!withinUserLimit) {
+        this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
+        throw new QuotaExceededError('Rate limit exceeded: max 10 AI calls per minute per user', 10, 10);
+      }
     }
 
     // 3. Check quota
