@@ -92,6 +92,8 @@ export async function GET(request: NextRequest) {
         used_documents: quota?.used_documents ?? 0,
         max_storage_bytes: quota?.max_storage_bytes ?? 0,
         used_storage_bytes: quota?.used_storage_bytes ?? 0,
+        max_credits: quota?.max_credits ?? 0,
+        used_credits: quota?.used_credits ?? 0,
         period_start: quota?.period_start ?? '',
         period_end: quota?.period_end ?? '',
       },
@@ -107,6 +109,7 @@ export async function GET(request: NextRequest) {
         tokens: safeDiv(quota?.used_tokens ?? 0, quota?.max_tokens ?? 0),
         documents: safeDiv(quota?.used_documents ?? 0, quota?.max_documents ?? 0),
         storage: safeDiv(quota?.used_storage_bytes ?? 0, quota?.max_storage_bytes ?? 0),
+        credits: safeDiv(quota?.used_credits ?? 0, quota?.max_credits ?? 0),
         monthly_cost: safeDiv(currentMonthCents, costLimit?.monthly_hard_limit_cents ?? 0),
       },
     };

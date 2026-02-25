@@ -191,6 +191,8 @@ export interface BillingUsageResponse {
     used_documents: number;
     max_storage_bytes: number;
     used_storage_bytes: number;
+    max_credits: number;
+    used_credits: number;
     period_start: string;
     period_end: string;
   };
@@ -206,6 +208,7 @@ export interface BillingUsageResponse {
     tokens: number;
     documents: number;
     storage: number;
+    credits: number;
     monthly_cost: number;
   };
 }

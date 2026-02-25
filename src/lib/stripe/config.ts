@@ -8,6 +8,7 @@ export interface PlanLimits {
   aiChecks: number;
   listings: number;
   storageGB: number;
+  credits: number;
 }
 
 export interface PlanDefinition {
@@ -33,34 +34,37 @@ export const PLANS: Record<string, PlanDefinition> = {
       aiChecks: 20,
       listings: 5,
       storageGB: 1,
+      credits: 10,
     },
   },
-  starter: {
-    name: 'Starter',
+  solo: {
+    name: 'Solo',
     price: 4900,
-    stripePriceId: process.env.STRIPE_PRICE_STARTER || 'price_starter',
+    stripePriceId: process.env.STRIPE_PRICE_SOLO || 'price_solo',
     limits: {
       members: 10,
       documents: 100,
       aiChecks: 200,
       listings: 50,
       storageGB: 5,
+      credits: 50,
     },
   },
-  professional: {
-    name: 'Professional',
+  pro: {
+    name: 'Pro',
     price: 14900,
-    stripePriceId: process.env.STRIPE_PRICE_PROFESSIONAL || 'price_professional',
+    stripePriceId: process.env.STRIPE_PRICE_PRO || 'price_pro',
     limits: {
       members: 25,
       documents: 500,
       aiChecks: 1000,
       listings: 200,
       storageGB: 25,
+      credits: 300,
     },
   },
-  enterprise: {
-    name: 'Enterprise',
+  team: {
+    name: 'Team',
     price: -1,
     limits: {
       members: -1,
@@ -68,6 +72,7 @@ export const PLANS: Record<string, PlanDefinition> = {
       aiChecks: -1,
       listings: -1,
       storageGB: -1,
+      credits: 2000,
     },
   },
 };

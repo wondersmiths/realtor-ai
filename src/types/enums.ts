@@ -68,9 +68,9 @@ export enum DisclosureStatus {
 // ──────────────────────────────────────────────
 export enum PlanTier {
   Free = 'free',
-  Starter = 'starter',
-  Professional = 'professional',
-  Enterprise = 'enterprise',
+  Solo = 'solo',
+  Pro = 'pro',
+  Team = 'team',
 }
 
 // ──────────────────────────────────────────────

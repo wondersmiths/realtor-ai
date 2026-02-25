@@ -11,9 +11,9 @@ import { AppError, NotFoundError, QuotaExceededError } from '@/lib/errors';
  * These should be configured in your Stripe dashboard.
  */
 const PLAN_PRICE_IDS: Record<string, string> = {
-  [PlanTier.Starter]: process.env.STRIPE_PRICE_STARTER || '',
-  [PlanTier.Professional]: process.env.STRIPE_PRICE_PROFESSIONAL || '',
-  [PlanTier.Enterprise]: process.env.STRIPE_PRICE_ENTERPRISE || '',
+  [PlanTier.Solo]: process.env.STRIPE_PRICE_SOLO || '',
+  [PlanTier.Pro]: process.env.STRIPE_PRICE_PRO || '',
+  [PlanTier.Team]: process.env.STRIPE_PRICE_TEAM || '',
 };
 
 function getStripeClient(): Stripe {
@@ -132,7 +132,7 @@ export class BillingService {
       paused: SubscriptionStatus.Paused,
     };
 
-    const planTier = (stripeSubscription.metadata?.plan as PlanTier) || PlanTier.Starter;
+    const planTier = (stripeSubscription.metadata?.plan as PlanTier) || PlanTier.Solo;
     const mappedStatus = statusMap[stripeSubscription.status] || SubscriptionStatus.Incomplete;
 
     // In Stripe SDK v20+, current_period_start/end moved to subscription items.
@@ -200,7 +200,7 @@ export class BillingService {
    */
   async checkQuota(
     orgId: string,
-    resource: 'ai_checks' | 'tokens' | 'documents' | 'storage_bytes',
+    resource: 'ai_checks' | 'tokens' | 'documents' | 'storage_bytes' | 'credits',
     amount = 1
   ): Promise<OrganizationAIQuota> {
     const { data: quota, error } = await this.supabase
@@ -223,6 +223,7 @@ export class BillingService {
       tokens: { max: 'max_tokens', used: 'used_tokens' },
       documents: { max: 'max_documents', used: 'used_documents' },
       storage_bytes: { max: 'max_storage_bytes', used: 'used_storage_bytes' },
+      credits: { max: 'max_credits', used: 'used_credits' },
     };
 
     const fields = fieldMap[resource];
@@ -254,6 +255,7 @@ export class BillingService {
       tokens?: number;
       documents?: number;
       storage_bytes?: number;
+      credits?: number;
     }
   ): Promise<void> {
     // Find the active quota period
@@ -286,6 +288,9 @@ export class BillingService {
     }
     if (increments.storage_bytes) {
       updates.used_storage_bytes = typedQuota.used_storage_bytes + increments.storage_bytes;
+    }
+    if (increments.credits) {
+      updates.used_credits = typedQuota.used_credits + increments.credits;
     }
 
     if (Object.keys(updates).length === 0) return;

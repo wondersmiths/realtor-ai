@@ -260,6 +260,8 @@ export interface OrganizationAIQuota {
   used_documents: number;
   max_storage_bytes: number;
   used_storage_bytes: number;
+  max_credits: number;
+  used_credits: number;
   created_at: string;
   updated_at: string;
 }

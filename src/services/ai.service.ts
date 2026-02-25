@@ -80,6 +80,17 @@ const OPERATION_MODEL_TIER: Record<string, ModelTier> = {
   // All other operations default to 'standard'
 };
 
+// Credit cost per operation type
+const OPERATION_CREDIT_COST: Record<string, number> = {
+  document_review: 1,
+  fair_housing_check: 1,
+  listing_compliance: 1,
+  document_classification: 1,
+  compliance_explanation: 1,
+  risk_prediction: 2,
+  batch_process: 5,
+};
+
 function resolveModel(operation: string): string {
   const tier = OPERATION_MODEL_TIER[operation] || 'standard';
   return MODEL_TIER_MAP[tier];
@@ -214,6 +225,14 @@ export class AIService {
 
       if (quota && quota.used_ai_checks >= quota.max_ai_checks) {
         return this.buildFallbackResult(fallbackFn(), 'AI check quota exceeded');
+      }
+
+      // 3b. Check credit quota
+      if (quota) {
+        const creditCost = OPERATION_CREDIT_COST[operation] ?? 1;
+        if (quota.used_credits + creditCost > quota.max_credits) {
+          return this.buildFallbackResult(fallbackFn(), 'AI credit quota exceeded');
+        }
       }
     } catch {
       // No quota record found - proceed (org may not have quotas configured)
@@ -421,11 +440,13 @@ export class AIService {
 
     // 10. Update quota counters
     if (quota) {
+      const creditCost = OPERATION_CREDIT_COST[operation] ?? 1;
       await this.supabase
         .from('org_ai_quota')
         .update({
           used_ai_checks: quota.used_ai_checks + 1,
           used_tokens: quota.used_tokens + totalTokens,
+          used_credits: quota.used_credits + creditCost,
           updated_at: new Date().toISOString(),
         })
         .eq('id', quota.id);
