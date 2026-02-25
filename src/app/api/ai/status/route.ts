@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { AppError } from '@/lib/errors';
+import { AIService } from '@/services/ai.service';
 
 /**
  * GET /api/ai/status
@@ -61,11 +62,16 @@ export async function GET(request: NextRequest) {
       quotaRemaining = Math.max(0, quota.max_ai_checks - quota.used_ai_checks);
     }
 
+    // Fetch cache hit rate stats
+    const aiService = new AIService(supabase);
+    const cacheStats = await aiService.getCacheStats(orgId);
+
     return NextResponse.json({
       data: {
         enabled: globalEnabled && orgEnabled,
         orgEnabled,
         quotaRemaining,
+        cache: cacheStats,
       },
     });
   } catch (error) {

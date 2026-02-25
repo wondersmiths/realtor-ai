@@ -356,7 +356,7 @@ export class AIService {
       system: rawPrompts.system,
       user: this.preprocessInput(rawPrompts.user, maxChars),
     };
-    const inputHash = this.hashInput(operation, prompts.system, prompts.user);
+    const inputHash = this.hashInput(operation, prompts.user);
 
     try {
       const { data: cached } = await this.supabase
@@ -378,6 +378,15 @@ export class AIService {
 
         try {
           const parsed = responseSchema.parse(typedCache.response);
+
+          // Log cache hit to ai_usage for analytics
+          await this.trackUsage(orgId, userId || null, operation, {
+            status: AIUsageStatus.Success,
+            model: typedCache.model,
+            latencyMs: Date.now() - startTime,
+            requestMetadata: { cached: true },
+          });
+
           return {
             data: parsed,
             aiUsed: true,
@@ -514,6 +523,7 @@ export class AIService {
       totalTokens,
       costCents,
       latencyMs,
+      requestMetadata: { cached: false },
     });
 
     // 10. Update quota counters
@@ -897,6 +907,39 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     });
   }
 
+  /**
+   * Return cache hit rate stats for the current billing month.
+   */
+  async getCacheStats(orgId: string): Promise<{
+    totalRequests: number;
+    cacheHits: number;
+    hitRate: number;
+  }> {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const { data: usage } = await this.supabase
+      .from('ai_usage')
+      .select('request_metadata')
+      .eq('organization_id', orgId)
+      .eq('status', 'success')
+      .gte('created_at', monthStart.toISOString());
+
+    const rows = usage || [];
+    const totalRequests = rows.length;
+    const cacheHits = rows.filter(
+      (r: { request_metadata: Record<string, unknown> | null }) =>
+        r.request_metadata?.cached === true
+    ).length;
+
+    return {
+      totalRequests,
+      cacheHits,
+      hitRate: totalRequests > 0 ? Math.round((cacheHits / totalRequests) * 100) : 0,
+    };
+  }
+
   // ──────────────────────────────────────────────
   // Private helpers
   // ──────────────────────────────────────────────
@@ -952,9 +995,11 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
 
   /**
    * Create a deterministic hash of the input for caching.
+   * Keys on operation + document text only (not system prompt),
+   * so prompt template changes don't invalidate the cache.
    */
-  private hashInput(operation: string, system: string, user: string): string {
-    const content = `${operation}:${system}:${user}`;
+  private hashInput(operation: string, documentText: string): string {
+    const content = `${operation}:${documentText}`;
     return createHash('sha256').update(content).digest('hex').slice(0, 32);
   }
 
@@ -974,6 +1019,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
       totalTokens?: number;
       costCents?: number;
       latencyMs?: number;
+      requestMetadata?: Record<string, unknown>;
     }
   ): Promise<void> {
     try {
@@ -990,7 +1036,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
         latency_ms: details.latencyMs || null,
         status: details.status,
         error_message: details.errorMessage || null,
-        request_metadata: {},
+        request_metadata: details.requestMetadata || {},
       });
     } catch (err) {
       console.error('[AIService] Failed to track AI usage:', err);
