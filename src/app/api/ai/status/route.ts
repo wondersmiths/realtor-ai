@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { AppError } from '@/lib/errors';
 import { AIService } from '@/services/ai.service';
+import type { AICostLimit } from '@/types/database';
 
 /**
  * GET /api/ai/status
@@ -66,12 +67,70 @@ export async function GET(request: NextRequest) {
     const aiService = new AIService(supabase);
     const cacheStats = await aiService.getCacheStats(orgId);
 
+    // Compute cost pressure / active guardrail state
+    let costPressure: {
+      monthlySpentCents: number;
+      monthlySoftLimitCents: number;
+      monthlyHardLimitCents: number;
+      spendPct: number;
+      activeGuardrail: 'none' | 'model_downgrade' | 'advanced_features_disabled' | 'hard_block';
+      advancedFeaturesEnabled: boolean;
+    } | null = null;
+
+    const { data: costLimitRow } = await supabase
+      .from('ai_cost_limits')
+      .select('*')
+      .eq('organization_id', orgId)
+      .single();
+
+    if (costLimitRow) {
+      const costLimit = costLimitRow as AICostLimit;
+
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      monthStart.setHours(0, 0, 0, 0);
+
+      const { data: monthlyUsage } = await supabase
+        .from('ai_usage')
+        .select('cost_cents')
+        .eq('organization_id', orgId)
+        .gte('created_at', monthStart.toISOString());
+
+      const monthlySpent = (monthlyUsage || []).reduce(
+        (sum: number, row: { cost_cents: number }) => sum + (row.cost_cents || 0),
+        0,
+      );
+
+      const softLimit = costLimit.monthly_soft_limit_cents;
+      const hardLimit = costLimit.monthly_hard_limit_cents;
+      const spendPct = softLimit > 0 ? Math.round((monthlySpent / softLimit) * 100) : 0;
+
+      let activeGuardrail: 'none' | 'model_downgrade' | 'advanced_features_disabled' | 'hard_block' = 'none';
+      if (costLimit.is_hard_limited && monthlySpent >= hardLimit) {
+        activeGuardrail = 'hard_block';
+      } else if (softLimit > 0 && spendPct >= 100) {
+        activeGuardrail = 'advanced_features_disabled';
+      } else if (softLimit > 0 && spendPct >= costLimit.alert_threshold_pct) {
+        activeGuardrail = 'model_downgrade';
+      }
+
+      costPressure = {
+        monthlySpentCents: monthlySpent,
+        monthlySoftLimitCents: softLimit,
+        monthlyHardLimitCents: hardLimit,
+        spendPct,
+        activeGuardrail,
+        advancedFeaturesEnabled: activeGuardrail !== 'advanced_features_disabled' && activeGuardrail !== 'hard_block',
+      };
+    }
+
     return NextResponse.json({
       data: {
         enabled: globalEnabled && orgEnabled,
         orgEnabled,
         quotaRemaining,
         cache: cacheStats,
+        costPressure,
       },
     });
   } catch (error) {

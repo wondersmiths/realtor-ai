@@ -10,7 +10,8 @@ import type {
   AICache,
   ComplianceCheckFindingJSON,
 } from '@/types/database';
-import { AIUsageStatus } from '@/types/enums';
+import { AIUsageStatus, AuditAction } from '@/types/enums';
+import { AuditService } from '@/services/audit.service';
 import type {
   AIResult,
   FairHousingResult,
@@ -109,6 +110,9 @@ const OPERATION_CREDIT_COST: Record<string, number> = {
   risk_prediction: 2,
   batch_process: 5,
 };
+
+// Operations gated behind Tier 2 (disabled when monthly soft limit is fully exhausted)
+const ADVANCED_OPERATIONS = new Set<string>(['risk_prediction', 'batch_process']);
 
 function resolveModel(operation: string, downgradeSteps = 0): string {
   const baseTier = OPERATION_MODEL_TIER[operation] || 'standard';
@@ -337,17 +341,56 @@ export class AIService {
             console.log(
               `[AIService] Cost-aware downgrade: ${operation} ${previousModel} → ${model} (downgradeSteps=${downgradeSteps})`
             );
+            // Tier 1: Log model downgrade guardrail event
+            await this.logGuardrailEvent({
+              orgId, userId, operation,
+              guardrailTier: 'model_downgrade',
+              totalSpentCents: totalSpent,
+              limitCents: typedCostLimit.monthly_soft_limit_cents,
+              dailySpentCents: dailySpent,
+              dailyLimitCents: typedCostLimit.daily_hard_limit_cents,
+              downgradeSteps,
+            });
           }
         }
 
-        // Hard-limit bail-outs
+        // Tier 2: Disable advanced features at 100% of soft limit
+        if (typedCostLimit.monthly_soft_limit_cents > 0) {
+          const softSpendPct = (totalSpent / typedCostLimit.monthly_soft_limit_cents) * 100;
+          if (softSpendPct >= 100 && ADVANCED_OPERATIONS.has(operation)) {
+            await this.logGuardrailEvent({
+              orgId, userId, operation,
+              guardrailTier: 'advanced_feature_disabled',
+              totalSpentCents: totalSpent,
+              limitCents: typedCostLimit.monthly_soft_limit_cents,
+            });
+            this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
+            return this.buildFallbackResult(fallbackFn(), 'Advanced AI feature disabled: monthly cost limit reached');
+          }
+        }
+
+        // Tier 3: Hard-limit bail-outs
         if (typedCostLimit.is_hard_limited) {
           if (totalSpent >= typedCostLimit.monthly_hard_limit_cents) {
+            await this.logGuardrailEvent({
+              orgId, userId, operation,
+              guardrailTier: 'hard_block',
+              totalSpentCents: totalSpent,
+              limitCents: typedCostLimit.monthly_hard_limit_cents,
+            });
             this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
             return this.buildFallbackResult(fallbackFn(), 'Monthly AI cost limit reached');
           }
 
           if (dailySpent >= typedCostLimit.daily_hard_limit_cents) {
+            await this.logGuardrailEvent({
+              orgId, userId, operation,
+              guardrailTier: 'hard_block',
+              totalSpentCents: dailySpent,
+              limitCents: typedCostLimit.daily_hard_limit_cents,
+              dailySpentCents: dailySpent,
+              dailyLimitCents: typedCostLimit.daily_hard_limit_cents,
+            });
             this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
             return this.buildFallbackResult(fallbackFn(), 'Daily AI cost limit reached');
           }
@@ -1033,6 +1076,53 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     timestamp: string;
   }): void {
     console.log(JSON.stringify({ event: 'ai_call', ...details }));
+  }
+
+  /**
+   * Log a guardrail activation event to stdout and audit_logs.
+   */
+  private async logGuardrailEvent(params: {
+    orgId: string;
+    userId?: string;
+    operation: string;
+    guardrailTier: 'model_downgrade' | 'advanced_feature_disabled' | 'hard_block';
+    totalSpentCents: number;
+    limitCents: number;
+    dailySpentCents?: number;
+    dailyLimitCents?: number;
+    downgradeSteps?: number;
+  }): Promise<void> {
+    console.log(JSON.stringify({
+      event: 'ai_guardrail_activated',
+      organization_id: params.orgId,
+      operation: params.operation,
+      guardrail_tier: params.guardrailTier,
+      monthly_spent_cents: params.totalSpentCents,
+      monthly_limit_cents: params.limitCents,
+      daily_spent_cents: params.dailySpentCents ?? null,
+      daily_limit_cents: params.dailyLimitCents ?? null,
+      downgrade_steps: params.downgradeSteps ?? null,
+      timestamp: new Date().toISOString(),
+    }));
+
+    try {
+      const auditService = new AuditService(this.supabase);
+      await auditService.log({
+        organizationId: params.orgId,
+        userId: params.userId || null,
+        action: AuditAction.AICostLimitReached,
+        resourceType: 'ai_cost_limit',
+        resourceId: params.orgId,
+        metadata: {
+          guardrail_tier: params.guardrailTier,
+          operation: params.operation,
+          monthly_spent_cents: params.totalSpentCents,
+          monthly_limit_cents: params.limitCents,
+        },
+      });
+    } catch {
+      // Non-critical — guardrail logging must not break the caller
+    }
   }
 
   /**
