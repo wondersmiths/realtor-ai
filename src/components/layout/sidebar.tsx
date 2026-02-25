@@ -15,6 +15,7 @@ import {
   Settings,
   ScrollText,
   BrainCircuit,
+  FlaskConical,
   ChevronLeft,
   ChevronRight,
   type LucideIcon,
@@ -40,6 +41,7 @@ const iconMap: Record<string, LucideIcon> = {
   Settings,
   ScrollText,
   BrainCircuit,
+  FlaskConical,
 };
 
 // ────────────────────────────────────────────

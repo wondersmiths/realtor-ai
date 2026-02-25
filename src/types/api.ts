@@ -5,6 +5,7 @@ import type {
   ClientType,
   PlanTier,
 } from './enums';
+import type { ComplianceCheckFindingJSON } from './database';
 
 // ──────────────────────────────────────────────
 // Generic Response Wrappers
@@ -254,4 +255,59 @@ export interface AccuracyDashboardResponse {
     completed_at: string | null;
   }>;
   unreviewed_count: number;
+}
+
+// ──────────────────────────────────────────────
+// Labeled Dataset / Evaluations
+// ──────────────────────────────────────────────
+export interface CreateGroundTruthRequest {
+  document_type: string;
+  input_text: string;
+  expected_findings: ComplianceCheckFindingJSON[];
+  tags?: string[];
+  source?: 'manual' | 'production_review' | 'synthetic';
+}
+
+export interface UpdateGroundTruthRequest {
+  document_type?: string;
+  input_text?: string;
+  expected_findings?: ComplianceCheckFindingJSON[];
+  tags?: string[];
+  is_active?: boolean;
+}
+
+export interface RunEvaluationRequest {
+  run_type: string;
+  tags?: string[];
+  triggered_by?: 'manual' | 'ci' | 'scheduled' | 'deploy';
+}
+
+export interface EvaluationCaseResult {
+  ground_truth_id: string;
+  document_type: string;
+  passed: boolean;
+  expected_count: number;
+  actual_count: number;
+  true_positives: number;
+  false_positives: number;
+  false_negatives: number;
+  precision: number;
+  recall: number;
+  f1: number;
+}
+
+export interface EvaluationReportResponse {
+  run_id: string;
+  run_type: string;
+  model: string;
+  status: string;
+  total_cases: number;
+  passed: number;
+  failed: number;
+  aggregate_precision: number;
+  aggregate_recall: number;
+  aggregate_f1: number;
+  cases: EvaluationCaseResult[];
+  started_at: string;
+  completed_at: string | null;
 }

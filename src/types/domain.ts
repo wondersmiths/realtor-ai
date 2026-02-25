@@ -12,6 +12,7 @@ import type {
   AICostLimit,
   DetectionResult,
   RegressionRun,
+  GroundTruthDocument,
 } from './database';
 import type { UserRole } from './enums';
 
@@ -101,6 +102,13 @@ export interface DetectionResultWithReviewer extends DetectionResult {
 export interface RegressionRunWithDelta extends RegressionRun {
   previous_f1?: number | null;
   f1_delta?: number | null;
+}
+
+// ──────────────────────────────────────────────
+// Ground Truth with creator profile
+// ──────────────────────────────────────────────
+export interface GroundTruthWithCreator extends GroundTruthDocument {
+  creator?: Pick<Profile, 'id' | 'email' | 'full_name'> | null;
 }
 
 // ──────────────────────────────────────────────
