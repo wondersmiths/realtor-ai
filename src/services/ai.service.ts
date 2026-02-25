@@ -208,6 +208,7 @@ export class AIService {
     // 1. Check global AI_ENABLED env var
     const aiEnabled = process.env.AI_ENABLED !== 'false';
     if (!aiEnabled) {
+      this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
       return this.buildFallbackResult(fallbackFn(), 'AI is globally disabled');
     }
 
@@ -220,15 +221,18 @@ export class AIService {
         .single();
 
       if (!org?.ai_enabled) {
+        this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
         return this.buildFallbackResult(fallbackFn(), 'AI is disabled for this organization');
       }
     } catch {
+      this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
       return this.buildFallbackResult(fallbackFn(), 'Failed to verify org AI settings');
     }
 
     // 2b. Check rate limit
     const { success: withinLimit } = await checkRateLimit(aiLimiter, orgId);
     if (!withinLimit) {
+      this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
       return this.buildFallbackResult(fallbackFn(), 'AI rate limit exceeded');
     }
 
@@ -247,6 +251,7 @@ export class AIService {
       quota = data as OrganizationAIQuota | null;
 
       if (quota && quota.used_ai_checks >= quota.max_ai_checks) {
+        this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
         return this.buildFallbackResult(fallbackFn(), 'AI check quota exceeded');
       }
 
@@ -254,6 +259,7 @@ export class AIService {
       if (quota) {
         const creditCost = OPERATION_CREDIT_COST[operation] ?? 1;
         if (quota.used_credits + creditCost > quota.max_credits) {
+          this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
           return this.buildFallbackResult(fallbackFn(), 'AI credit quota exceeded');
         }
       }
@@ -337,10 +343,12 @@ export class AIService {
         // Hard-limit bail-outs
         if (typedCostLimit.is_hard_limited) {
           if (totalSpent >= typedCostLimit.monthly_hard_limit_cents) {
+            this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
             return this.buildFallbackResult(fallbackFn(), 'Monthly AI cost limit reached');
           }
 
           if (dailySpent >= typedCostLimit.daily_hard_limit_cents) {
+            this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
             return this.buildFallbackResult(fallbackFn(), 'Daily AI cost limit reached');
           }
         }
@@ -387,6 +395,8 @@ export class AIService {
             requestMetadata: { cached: true },
           });
 
+          this.logAICall({ organization_id: orgId, feature_type: operation, model_used: typedCache.model, tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
+
           return {
             data: parsed,
             aiUsed: true,
@@ -407,6 +417,7 @@ export class AIService {
     // 6. Check for Anthropic API key
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
+      this.logAICall({ organization_id: orgId, feature_type: operation, model_used: 'none', tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
       return this.buildFallbackResult(fallbackFn(), 'Anthropic API key not configured');
     }
 
@@ -472,6 +483,8 @@ export class AIService {
         latencyMs,
       });
 
+      this.logAICall({ organization_id: orgId, feature_type: operation, model_used: model, tokens_input: 0, tokens_output: 0, estimated_cost: 0, timestamp: new Date().toISOString() });
+
       return this.buildFallbackResult(
         fallbackFn(),
         lastError?.message || 'AI call failed after retries'
@@ -512,6 +525,8 @@ export class AIService {
         latencyMs,
       });
 
+      this.logAICall({ organization_id: orgId, feature_type: operation, model_used: model, tokens_input: inputTokens, tokens_output: outputTokens, estimated_cost: costCents, timestamp: new Date().toISOString() });
+
       return this.buildFallbackResult(fallbackFn(), 'AI response validation failed');
     }
 
@@ -525,6 +540,8 @@ export class AIService {
       latencyMs,
       requestMetadata: { cached: false },
     });
+
+    this.logAICall({ organization_id: orgId, feature_type: operation, model_used: model, tokens_input: inputTokens, tokens_output: outputTokens, estimated_cost: costCents, timestamp: new Date().toISOString() });
 
     // 10. Update quota counters
     if (quota) {
@@ -1001,6 +1018,21 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
   private hashInput(operation: string, documentText: string): string {
     const content = `${operation}:${documentText}`;
     return createHash('sha256').update(content).digest('hex').slice(0, 32);
+  }
+
+  /**
+   * Emit a structured log line for every AI call.
+   */
+  private logAICall(details: {
+    organization_id: string;
+    feature_type: string;
+    model_used: string;
+    tokens_input: number;
+    tokens_output: number;
+    estimated_cost: number;
+    timestamp: string;
+  }): void {
+    console.log(JSON.stringify({ event: 'ai_call', ...details }));
   }
 
   /**
