@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { FlaskConical, Target, Crosshair, Activity, ShieldCheck, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { FlaskConical, Target, Crosshair, Activity, ShieldCheck, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
@@ -11,8 +11,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useOrganization } from '@/hooks/use-organization';
 import { usePermissions } from '@/hooks/use-permissions';
-import type { EvaluationCaseResult, EvaluationReportResponse, RegressionGateResponse } from '@/types/api';
+import type { EvaluationCaseResult, EvaluationReportResponse, RegressionGateResponse, DetectionFeedbackStats } from '@/types/api';
 import type { GroundTruthDocument } from '@/types/database';
+import type { DetectionResultWithReviewer } from '@/types/domain';
 
 // ──────────────────────────────────────────────
 // Helpers
@@ -100,6 +101,13 @@ export default function EvaluationsPage() {
   const [gateResult, setGateResult] = useState<RegressionGateResponse | null>(null);
   const [gateError, setGateError] = useState<string | null>(null);
 
+  // Detection feedback state
+  const [feedbackStats, setFeedbackStats] = useState<DetectionFeedbackStats | null>(null);
+  const [detectionResults, setDetectionResults] = useState<DetectionResultWithReviewer[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(true);
+  const [feedbackFilter, setFeedbackFilter] = useState<'all' | 'true' | 'false'>('false');
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState<string | null>(null);
+
   const [error, setError] = useState<string | null>(null);
 
   const orgId = currentOrg?.id;
@@ -173,6 +181,36 @@ export default function EvaluationsPage() {
       fetchHistory();
     }
   }, [fetchGroundTruths, fetchRuns, fetchHistory, isOwner, isAdmin, orgId]);
+
+  // Fetch detection feedback data
+  const fetchFeedback = useCallback(async () => {
+    if (!orgId) return;
+    setFeedbackLoading(true);
+    try {
+      const [statsRes, resultsRes] = await Promise.all([
+        fetch(`/api/evaluations/detection-feedback?mode=stats`, { headers: headers() }),
+        fetch(`/api/evaluations/detection-feedback?mode=results&reviewed=${feedbackFilter}&pageSize=30`, { headers: headers() }),
+      ]);
+      if (statsRes.ok) {
+        const statsJson = await statsRes.json();
+        setFeedbackStats(statsJson.data ?? null);
+      }
+      if (resultsRes.ok) {
+        const resultsJson = await resultsRes.json();
+        setDetectionResults(resultsJson.data ?? []);
+      }
+    } catch (err) {
+      console.error('Error fetching feedback:', err);
+    } finally {
+      setFeedbackLoading(false);
+    }
+  }, [orgId, headers, feedbackFilter]);
+
+  useEffect(() => {
+    if ((isOwner || isAdmin) && orgId) {
+      fetchFeedback();
+    }
+  }, [fetchFeedback, isOwner, isAdmin, orgId]);
 
   if (!isOwner && !isAdmin) return null;
 
@@ -266,6 +304,48 @@ export default function EvaluationsPage() {
       setGateError(err instanceof Error ? err.message : 'Gate check failed');
     } finally {
       setGateLoading(false);
+    }
+  };
+
+  // Detection feedback handlers
+  const handleFlagDetection = async (resultId: string, errorType: 'false_positive' | 'missed_signature') => {
+    setFeedbackSubmitting(resultId);
+    try {
+      const res = await fetch('/api/evaluations/detection-feedback', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          action: 'flag',
+          detection_result_id: resultId,
+          error_type: errorType,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error?.message || 'Failed to submit');
+      }
+      fetchFeedback();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Feedback failed');
+    } finally {
+      setFeedbackSubmitting(null);
+    }
+  };
+
+  const handleConfirmDetection = async (resultId: string) => {
+    setFeedbackSubmitting(resultId);
+    try {
+      const res = await fetch('/api/evaluations/detection-feedback', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ action: 'confirm', detection_result_id: resultId }),
+      });
+      if (!res.ok) throw new Error('Failed to confirm');
+      fetchFeedback();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Confirm failed');
+    } finally {
+      setFeedbackSubmitting(null);
     }
   };
 
@@ -378,6 +458,7 @@ export default function EvaluationsPage() {
               <TabsTrigger value="run-evaluation">Run Evaluation</TabsTrigger>
               <TabsTrigger value="accuracy-report">Accuracy Report</TabsTrigger>
               <TabsTrigger value="regression-gate">Regression Gate</TabsTrigger>
+              <TabsTrigger value="detection-feedback">Detection Feedback</TabsTrigger>
             </TabsList>
 
             {/* Ground Truth Tab */}
@@ -863,6 +944,230 @@ export default function EvaluationsPage() {
                         })}
                       </tbody>
                     </table>
+                  </div>
+                )}
+              </div>
+            </TabsContent>
+
+            {/* Detection Feedback Tab */}
+            <TabsContent value="detection-feedback">
+              <div className="space-y-6">
+                {/* Feedback stats */}
+                {feedbackStats && (
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                      <p className="text-xs font-medium uppercase text-gray-500">Unreviewed</p>
+                      <p className="mt-1 text-2xl font-bold text-gray-900 dark:text-gray-50">{feedbackStats.unreviewed}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                      <p className="text-xs font-medium uppercase text-gray-500">False Positives</p>
+                      <p className="mt-1 text-2xl font-bold text-red-600">{feedbackStats.false_positives}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                      <p className="text-xs font-medium uppercase text-gray-500">Missed Signatures</p>
+                      <p className="mt-1 text-2xl font-bold text-orange-600">{feedbackStats.missed_signatures}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                      <p className="text-xs font-medium uppercase text-gray-500">Reviewed</p>
+                      <p className="mt-1 text-2xl font-bold text-green-600">{feedbackStats.reviewed}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Error breakdown by detection type */}
+                {feedbackStats && Object.keys(feedbackStats.by_detection_type).length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Errors by Detection Type</h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-200 dark:border-gray-700">
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Detection Type</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Total</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">False Positives</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Missed Signatures</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(feedbackStats.by_detection_type).map(([dt, counts]) => (
+                            <tr key={dt} className="border-b border-gray-100 dark:border-gray-800">
+                              <td className="px-3 py-2 font-medium">{dt}</td>
+                              <td className="px-3 py-2">{counts.total}</td>
+                              <td className="px-3 py-2 text-red-600">{counts.false_positives}</td>
+                              <td className="px-3 py-2 text-orange-600">{counts.missed_signatures}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Detection results for review */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">Detection Results</h3>
+                    <select
+                      value={feedbackFilter}
+                      onChange={(e) => setFeedbackFilter(e.target.value as 'all' | 'true' | 'false')}
+                      className="rounded-md border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-800"
+                    >
+                      <option value="false">Unreviewed</option>
+                      <option value="true">Reviewed</option>
+                      <option value="all">All</option>
+                    </select>
+                  </div>
+
+                  {feedbackLoading ? (
+                    <Skeleton className="h-40 w-full" />
+                  ) : detectionResults.length === 0 ? (
+                    <p className="py-8 text-center text-sm text-gray-500">No detection results found.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-200 dark:border-gray-700">
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Type</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Model</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Confidence</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Items</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Status</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Date</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detectionResults.map((dr) => (
+                            <tr key={dr.id} className="border-b border-gray-100 dark:border-gray-800">
+                              <td className="px-3 py-2 font-medium">{dr.detection_type}</td>
+                              <td className="px-3 py-2 text-xs font-mono">{dr.model ?? '-'}</td>
+                              <td className="px-3 py-2">
+                                {dr.confidence_score != null ? `${(dr.confidence_score * 100).toFixed(0)}%` : '-'}
+                              </td>
+                              <td className="px-3 py-2">{dr.detected_items?.length ?? 0}</td>
+                              <td className="px-3 py-2">
+                                {dr.is_correct === null ? (
+                                  <span className="inline-block rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">
+                                    Unreviewed
+                                  </span>
+                                ) : dr.is_correct ? (
+                                  <span className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                                    Correct
+                                  </span>
+                                ) : (
+                                  <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                                    Flagged
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 text-gray-500">
+                                {new Date(dr.created_at).toLocaleDateString()}
+                              </td>
+                              <td className="px-3 py-2">
+                                {dr.is_correct === null && (
+                                  <div className="flex gap-1">
+                                    <button
+                                      onClick={() => handleConfirmDetection(dr.id)}
+                                      disabled={feedbackSubmitting === dr.id}
+                                      className="inline-flex items-center gap-1 rounded bg-green-50 px-2 py-1 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50 dark:bg-green-900/20 dark:text-green-400"
+                                      title="Confirm correct"
+                                    >
+                                      <CheckCircle2 className="h-3 w-3" />
+                                      OK
+                                    </button>
+                                    <button
+                                      onClick={() => handleFlagDetection(dr.id, 'false_positive')}
+                                      disabled={feedbackSubmitting === dr.id}
+                                      className="inline-flex items-center gap-1 rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 dark:bg-red-900/20 dark:text-red-400"
+                                      title="Flag as false positive"
+                                    >
+                                      <AlertTriangle className="h-3 w-3" />
+                                      FP
+                                    </button>
+                                    <button
+                                      onClick={() => handleFlagDetection(dr.id, 'missed_signature')}
+                                      disabled={feedbackSubmitting === dr.id}
+                                      className="inline-flex items-center gap-1 rounded bg-orange-50 px-2 py-1 text-xs font-medium text-orange-700 hover:bg-orange-100 disabled:opacity-50 dark:bg-orange-900/20 dark:text-orange-400"
+                                      title="Flag as missed signature"
+                                    >
+                                      <AlertTriangle className="h-3 w-3" />
+                                      Missed
+                                    </button>
+                                  </div>
+                                )}
+                                {dr.is_correct !== null && dr.reviewer && (
+                                  <span className="text-xs text-gray-500">
+                                    by {dr.reviewer.full_name ?? dr.reviewer.email}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent error log */}
+                {feedbackStats && feedbackStats.recent_errors.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Error Log (for Rule Improvement)</h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-200 dark:border-gray-700">
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Error Type</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Detection Method</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Severity</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Doc Hash</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Root Cause</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Resolved</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Timestamp</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {feedbackStats.recent_errors.map((e) => (
+                            <tr key={e.id} className="border-b border-gray-100 dark:border-gray-800">
+                              <td className="px-3 py-2">
+                                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  e.error_type === 'false_positive'
+                                    ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                                    : e.error_type === 'missed_signature'
+                                      ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+                                      : 'bg-gray-100 text-gray-600 dark:bg-gray-700'
+                                }`}>
+                                  {e.error_type}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 font-medium">{e.detection_type}</td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  e.severity === 'critical' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                                    : e.severity === 'high' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+                                    : e.severity === 'medium' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                                    : 'bg-gray-100 text-gray-600 dark:bg-gray-700'
+                                }`}>
+                                  {e.severity}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 font-mono text-xs">{e.document_hash ? e.document_hash.slice(0, 12) : '-'}</td>
+                              <td className="px-3 py-2 text-xs">{e.root_cause ?? '-'}</td>
+                              <td className="px-3 py-2">
+                                {e.resolved ? (
+                                  <span className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">Yes</span>
+                                ) : (
+                                  <span className="inline-block rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">Open</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 text-gray-500">
+                                {new Date(e.created_at).toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </div>

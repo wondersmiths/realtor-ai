@@ -354,3 +354,41 @@ export interface RegressionGateResponse {
   started_at: string;
   completed_at: string;
 }
+
+// ──────────────────────────────────────────────
+// Detection Feedback
+// ──────────────────────────────────────────────
+export interface SubmitDetectionFeedbackRequest {
+  detection_result_id: string;
+  error_type: 'false_positive' | 'missed_signature';
+  severity?: 'low' | 'medium' | 'high' | 'critical';
+  expected_output?: Record<string, unknown>;
+  feedback_notes?: string;
+  document_hash?: string;
+}
+
+export interface DetectionFeedbackStats {
+  total_results: number;
+  reviewed: number;
+  unreviewed: number;
+  false_positives: number;
+  missed_signatures: number;
+  false_negatives: number;
+  misclassifications: number;
+  by_detection_type: Record<string, {
+    total: number;
+    false_positives: number;
+    missed_signatures: number;
+  }>;
+  recent_errors: Array<{
+    id: string;
+    detection_result_id: string;
+    error_type: string;
+    severity: string;
+    detection_type: string;
+    document_hash: string | null;
+    root_cause: string | null;
+    resolved: boolean;
+    created_at: string;
+  }>;
+}

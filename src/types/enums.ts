@@ -143,6 +143,7 @@ export enum AIUsageStatus {
 export enum DetectionErrorType {
   FalsePositive = 'false_positive',
   FalseNegative = 'false_negative',
+  MissedSignature = 'missed_signature',
   Misclassification = 'misclassification',
 }
 
