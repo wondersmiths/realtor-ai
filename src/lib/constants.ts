@@ -115,4 +115,5 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard/billing', label: 'Billing', icon: 'CreditCard', requiredRole: 'owner' },
   { href: '/dashboard/settings', label: 'Settings', icon: 'Settings' },
   { href: '/dashboard/audit-log', label: 'Audit Log', icon: 'ScrollText', requiredRole: 'admin' },
+  { href: '/dashboard/ai-analytics', label: 'AI Analytics', icon: 'BrainCircuit', requiredRole: 'admin' },
 ];

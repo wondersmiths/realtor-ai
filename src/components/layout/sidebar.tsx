@@ -14,6 +14,7 @@ import {
   CreditCard,
   Settings,
   ScrollText,
+  BrainCircuit,
   ChevronLeft,
   ChevronRight,
   type LucideIcon,
@@ -38,6 +39,7 @@ const iconMap: Record<string, LucideIcon> = {
   CreditCard,
   Settings,
   ScrollText,
+  BrainCircuit,
 };
 
 // ────────────────────────────────────────────
