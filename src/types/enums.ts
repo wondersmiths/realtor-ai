@@ -187,6 +187,24 @@ export enum RegressionTrigger {
 }
 
 // ──────────────────────────────────────────────
+// Anomaly Type
+// ──────────────────────────────────────────────
+export enum AnomalyType {
+  ExcessiveLargeUploads = 'excessive_large_uploads',
+  RepeatedDuplicateUploads = 'repeated_duplicate_uploads',
+  SuddenAISpike = 'sudden_ai_spike',
+}
+
+// ──────────────────────────────────────────────
+// Anomaly Status
+// ──────────────────────────────────────────────
+export enum AnomalyStatus {
+  Open = 'open',
+  Dismissed = 'dismissed',
+  Resolved = 'resolved',
+}
+
+// ──────────────────────────────────────────────
 // Resource Type (for reminders / audit)
 // ──────────────────────────────────────────────
 export enum ResourceType {
@@ -253,6 +271,11 @@ export enum AuditAction {
   AICostLimitUpdated = 'ai.cost_limit_updated',
   AICostLimitReached = 'ai.cost_limit_reached',
   AISystemCeilingBreached = 'ai.system_ceiling_breached',
+
+  // Anomaly Detection
+  AnomalyDetected = 'anomaly.detected',
+  AnomalyDismissed = 'anomaly.dismissed',
+  AnomalyResolved = 'anomaly.resolved',
 
   // Billing
   SubscriptionCreated = 'billing.subscription_created',

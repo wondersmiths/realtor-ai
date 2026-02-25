@@ -363,6 +363,28 @@ export interface RegressionRun {
 }
 
 // ============================================================
+// ANOMALY DETECTION
+// ============================================================
+
+export interface AnomalyFlag {
+  id: string;
+  organization_id: string;
+  anomaly_type: string;
+  severity: string;
+  status: string;
+  title: string;
+  description: string | null;
+  metadata: Record<string, unknown>;
+  detected_at: string;
+  dismissed_at: string | null;
+  dismissed_by: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
 // SECURITY
 // ============================================================
 

@@ -356,6 +356,14 @@ export interface RegressionGateResponse {
 }
 
 // ──────────────────────────────────────────────
+// Anomaly Flags
+// ──────────────────────────────────────────────
+export interface UpdateAnomalyFlagRequest {
+  status: 'dismissed' | 'resolved';
+  reason?: string;
+}
+
+// ──────────────────────────────────────────────
 // Detection Feedback
 // ──────────────────────────────────────────────
 export interface SubmitDetectionFeedbackRequest {

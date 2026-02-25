@@ -88,6 +88,87 @@ export class NotificationService {
   }
 
   /**
+   * Send an anomaly detection alert to the platform admin.
+   */
+  static async sendAnomalyAlert(
+    orgId: string,
+    anomalyType: string,
+    severity: string,
+    title: string,
+    description: string,
+    metadata: Record<string, unknown> = {},
+  ): Promise<{ sent: boolean; error?: string }> {
+    const adminEmail = process.env.AI_SYSTEM_ADMIN_EMAIL;
+    if (!adminEmail) {
+      console.warn('[NotificationService] AI_SYSTEM_ADMIN_EMAIL not set - skipping anomaly alert');
+      return { sent: false, error: 'Admin email not configured' };
+    }
+
+    const resend = getResendClient();
+    if (!resend) {
+      console.warn('[NotificationService] RESEND_API_KEY not set - skipping anomaly alert email');
+      return { sent: false, error: 'Email service not configured' };
+    }
+
+    const appUrl = getAppUrl();
+    const dashboardUrl = `${appUrl}/dashboard/anomaly-flags`;
+
+    const severityColorMap: Record<string, string> = {
+      low: '#3b82f6',
+      medium: '#f59e0b',
+      high: '#f97316',
+      critical: '#dc2626',
+    };
+    const headerColor = severityColorMap[severity] || '#f59e0b';
+
+    try {
+      await resend.emails.send({
+        from: getFromEmail(),
+        to: adminEmail,
+        subject: `[${severity.toUpperCase()}] Anomaly Detected: ${title}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: ${headerColor};">Anomaly Detected</h2>
+            <p>${description}</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Organization</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${orgId}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Type</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${anomalyType}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Severity</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${severity}</td>
+              </tr>
+              ${Object.entries(metadata).map(([key, value]) => `
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${key}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${String(value)}</td>
+              </tr>
+              `).join('')}
+            </table>
+            <a href="${dashboardUrl}" style="display: inline-block; padding: 12px 24px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 6px;">
+              View Dashboard
+            </a>
+            <p style="color: #6b7280; font-size: 12px; margin-top: 24px;">
+              This is an automated notification from RealtorAI.
+            </p>
+          </div>
+        `,
+      });
+
+      return { sent: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown email error';
+      console.error('[NotificationService] Failed to send anomaly alert:', message);
+      return { sent: false, error: message };
+    }
+  }
+
+  /**
    * Send a compliance alert email when a compliance check produces concerning findings.
    */
   async sendComplianceAlert(

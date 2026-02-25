@@ -13,6 +13,7 @@ import type {
   DetectionResult,
   RegressionRun,
   GroundTruthDocument,
+  AnomalyFlag,
 } from './database';
 import type { UserRole } from './enums';
 
@@ -183,6 +184,13 @@ export interface RiskPredictionResult {
   patterns: RiskPattern[];
   summary: string;
   timeHorizon: string;
+}
+
+// ──────────────────────────────────────────────
+// Anomaly Flag with Organization
+// ──────────────────────────────────────────────
+export interface AnomalyFlagWithOrg extends AnomalyFlag {
+  organization?: Pick<Organization, 'id' | 'name' | 'slug'> | null;
 }
 
 // ──────────────────────────────────────────────

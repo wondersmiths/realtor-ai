@@ -8,6 +8,7 @@ import type { DocumentWithUploader } from '@/types/domain';
 import type { PaginationParams, PaginatedResponse } from '@/types/api';
 import { NotFoundError, AppError, ValidationError } from '@/lib/errors';
 import { enqueueDocumentReview } from '@/lib/queue/producer';
+import { AnomalyDetectionService } from '@/services/anomaly-detection.service';
 
 const STORAGE_BUCKET = 'documents';
 
@@ -151,6 +152,11 @@ export class DocumentService {
       .maybeSingle();
 
     if (existing) {
+      // Fire-and-forget: track duplicate upload attempt for anomaly detection
+      new AnomalyDetectionService(this.supabase)
+        .checkUploadAnomaly(orgId, uploadedBy, file.size, fileHash)
+        .catch(() => {});
+
       throw new ValidationError(
         `A duplicate file already exists: "${existing.name}"`,
         { file: ['This file has already been uploaded to your organization'] }
@@ -214,6 +220,11 @@ export class DocumentService {
     } catch (err) {
       console.warn('[DocumentService] Failed to enqueue review job:', err);
     }
+
+    // Fire-and-forget: check for upload anomalies on successful uploads
+    new AnomalyDetectionService(this.supabase)
+      .checkUploadAnomaly(orgId, uploadedBy, file.size, fileHash)
+      .catch(() => {});
 
     return data as Document;
   }

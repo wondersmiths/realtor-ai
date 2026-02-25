@@ -13,6 +13,7 @@ import type {
 import { AIUsageStatus, AuditAction } from '@/types/enums';
 import { QuotaExceededError } from '@/lib/errors';
 import { AuditService } from '@/services/audit.service';
+import { AnomalyDetectionService } from '@/services/anomaly-detection.service';
 import { NotificationService } from '@/services/notification.service';
 import type {
   AIResult,
@@ -1249,6 +1250,11 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
         error_message: details.errorMessage || null,
         request_metadata: details.requestMetadata || {},
       });
+
+      // Fire-and-forget: check for AI usage spike anomalies
+      new AnomalyDetectionService(this.supabase)
+        .checkAISpike(orgId, userId)
+        .catch(() => {});
     } catch (err) {
       console.error('[AIService] Failed to track AI usage:', err);
     }
