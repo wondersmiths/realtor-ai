@@ -24,6 +24,7 @@ import {
   complianceExplanationSchema,
   riskPredictionResultSchema,
 } from '@/lib/ai/schemas';
+import { prepareInput } from '@/lib/ai/preprocessing';
 import { aiLimiter, checkRateLimit } from '@/lib/redis/rate-limiter';
 import { createHash } from 'crypto';
 
@@ -495,6 +496,9 @@ export class AIService {
     userId: string,
     text: string
   ): Promise<AIResult<DocumentReviewResult>> {
+    const prepared = prepareInput(text, { maxTokens: 3750, operation: 'document_review' });
+    console.log(`[AIService] document_review: ${prepared.originalTokens}→${prepared.finalTokens} tokens (${prepared.reductionPct}% reduction)`);
+
     return this.executeAICall<DocumentReviewResult>({
       orgId,
       userId,
@@ -522,7 +526,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
   ],
   "summary": "<brief overall summary>"
 }`,
-        user: `Please review this document text for compliance:\n\n${text.slice(0, 15000)}`,
+        user: `Please review this document text for compliance:\n\n${prepared.text}`,
       }),
       responseSchema: documentReviewSchema,
       fallbackFn: () => ({
@@ -549,6 +553,9 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     userId: string,
     text: string
   ): Promise<AIResult<FairHousingResult>> {
+    const prepared = prepareInput(text, { maxTokens: 3750, operation: 'fair_housing_check' });
+    console.log(`[AIService] fair_housing_check: ${prepared.originalTokens}→${prepared.finalTokens} tokens (${prepared.reductionPct}% reduction)`);
+
     return this.executeAICall<FairHousingResult>({
       orgId,
       userId,
@@ -581,7 +588,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
   "score": <0-100 where 100 is fully compliant>,
   "aiUsed": true
 }`,
-        user: `Analyze this text for Fair Housing Act compliance:\n\n${text.slice(0, 15000)}`,
+        user: `Analyze this text for Fair Housing Act compliance:\n\n${prepared.text}`,
       }),
       responseSchema: fairHousingResultSchema,
       fallbackFn: () => ({
@@ -600,8 +607,11 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     userId: string,
     listing: Listing
   ): Promise<AIResult<ComplianceResult>> {
+    const preparedDesc = prepareInput(listing.description || '', { maxTokens: 3750, operation: 'listing_compliance' });
+    console.log(`[AIService] listing_compliance: ${preparedDesc.originalTokens}→${preparedDesc.finalTokens} tokens (${preparedDesc.reductionPct}% reduction)`);
+
     const listingText = [
-      listing.description || '',
+      preparedDesc.text,
       `Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip_code}`,
       listing.property_type ? `Property Type: ${listing.property_type}` : '',
       listing.price ? `Price: $${listing.price.toLocaleString()}` : '',
@@ -677,6 +687,9 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     text: string,
     fileName?: string
   ): Promise<AIResult<DocumentClassification>> {
+    const prepared = prepareInput(text, { maxTokens: 2000, operation: 'document_classification' });
+    console.log(`[AIService] document_classification: ${prepared.originalTokens}→${prepared.finalTokens} tokens (${prepared.reductionPct}% reduction)`);
+
     return this.executeAICall<DocumentClassification>({
       orgId,
       userId,
@@ -694,7 +707,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
   "requiredActions": ["<action needed based on document type>"],
   "summary": "<brief summary of the document>"
 }`,
-        user: `Classify this document${fileName ? ` (filename: ${fileName})` : ''}:\n\n${text}`,
+        user: `Classify this document${fileName ? ` (filename: ${fileName})` : ''}:\n\n${prepared.text}`,
       }),
       responseSchema: documentClassificationSchema,
       fallbackFn: () => ({
@@ -718,6 +731,9 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     findingMessage: string,
     jurisdiction?: string
   ): Promise<AIResult<ComplianceExplanation>> {
+    const prepared = prepareInput(findingMessage, { maxTokens: 4000, operation: 'compliance_explanation' });
+    console.log(`[AIService] compliance_explanation: ${prepared.originalTokens}→${prepared.finalTokens} tokens (${prepared.reductionPct}% reduction)`);
+
     return this.executeAICall<ComplianceExplanation>({
       orgId,
       userId,
@@ -736,7 +752,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
   "remediation": "<specific steps to resolve this finding>",
   "examples": ["<example of compliant vs non-compliant behavior>"]
 }`,
-        user: `Explain this compliance finding${jurisdiction ? ` (jurisdiction: ${jurisdiction})` : ''}:\n\nRule ID: ${ruleId}\nFinding: ${findingMessage}`,
+        user: `Explain this compliance finding${jurisdiction ? ` (jurisdiction: ${jurisdiction})` : ''}:\n\nRule ID: ${ruleId}\nFinding: ${prepared.text}`,
       }),
       responseSchema: complianceExplanationSchema,
       fallbackFn: () => ({
@@ -763,6 +779,10 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
       violationHistory: Array<{ type: string; date: string; resolved: boolean }>;
     }
   ): Promise<AIResult<RiskPredictionResult>> {
+    const portfolioText = `Recent Findings:\n${JSON.stringify(portfolioData.recentFindings, null, 2)}\n\nCompliance Scores:\n${JSON.stringify(portfolioData.complianceScores, null, 2)}\n\nViolation History:\n${JSON.stringify(portfolioData.violationHistory, null, 2)}`;
+    const prepared = prepareInput(portfolioText, { maxTokens: 3000, operation: 'risk_prediction' });
+    console.log(`[AIService] risk_prediction: ${prepared.originalTokens}→${prepared.finalTokens} tokens (${prepared.reductionPct}% reduction)`);
+
     return this.executeAICall<RiskPredictionResult>({
       orgId,
       userId,
@@ -788,7 +808,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
   "summary": "<overall risk assessment summary>",
   "timeHorizon": "<e.g. 30 days, 90 days, 6 months>"
 }`,
-        user: `Analyze this portfolio data for risk patterns:\n\nRecent Findings:\n${JSON.stringify(portfolioData.recentFindings, null, 2)}\n\nCompliance Scores:\n${JSON.stringify(portfolioData.complianceScores, null, 2)}\n\nViolation History:\n${JSON.stringify(portfolioData.violationHistory, null, 2)}`,
+        user: `Analyze this portfolio data for risk patterns:\n\n${prepared.text}`,
       }),
       responseSchema: riskPredictionResultSchema,
       fallbackFn: () => ({
