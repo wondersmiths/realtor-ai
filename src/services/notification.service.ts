@@ -28,6 +28,66 @@ export class NotificationService {
   constructor(private supabase: SupabaseClient) {}
 
   /**
+   * Send a system-wide AI spend ceiling breach alert to the platform admin.
+   */
+  static async sendSystemCeilingAlert(
+    adminEmail: string,
+    totalSpentCents: number,
+    ceilingCents: number,
+  ): Promise<{ sent: boolean; error?: string }> {
+    const resend = getResendClient();
+
+    if (!resend) {
+      console.warn('[NotificationService] RESEND_API_KEY not set - skipping system ceiling alert email');
+      return { sent: false, error: 'Email service not configured' };
+    }
+
+    const spendPct = ceilingCents > 0 ? Math.round((totalSpentCents / ceilingCents) * 100) : 0;
+
+    try {
+      await resend.emails.send({
+        from: getFromEmail(),
+        to: adminEmail,
+        subject: 'System AI Spend Ceiling Breached',
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #dc2626;">System AI Spend Ceiling Breached</h2>
+            <p>The system-wide AI spend ceiling has been exceeded. All organizations have been automatically downgraded to the fastest (cheapest) model.</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Total Spent</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">$${(totalSpentCents / 100).toFixed(2)}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Ceiling</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">$${(ceilingCents / 100).toFixed(2)}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Usage</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${spendPct}%</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">Action Taken</td>
+                <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">All orgs downgraded to fast model</td>
+              </tr>
+            </table>
+            <p>Increase <code>AI_SYSTEM_MONTHLY_CEILING_CENTS</code> or wait for the next billing month to restore normal model routing.</p>
+            <p style="color: #6b7280; font-size: 12px; margin-top: 24px;">
+              This is an automated notification from RealtorAI.
+            </p>
+          </div>
+        `,
+      });
+
+      return { sent: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown email error';
+      console.error('[NotificationService] Failed to send system ceiling alert:', message);
+      return { sent: false, error: message };
+    }
+  }
+
+  /**
    * Send a compliance alert email when a compliance check produces concerning findings.
    */
   async sendComplianceAlert(

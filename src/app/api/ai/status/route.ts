@@ -124,6 +124,38 @@ export async function GET(request: NextRequest) {
       };
     }
 
+    // Compute system-wide ceiling status
+    let systemCeiling: {
+      ceilingCents: number;
+      systemSpentCents: number;
+      spendPct: number;
+      exceeded: boolean;
+    } | null = null;
+
+    const systemCeilingCents = Number(process.env.AI_SYSTEM_MONTHLY_CEILING_CENTS) || 0;
+    if (systemCeilingCents > 0) {
+      const sysMonthStart = new Date();
+      sysMonthStart.setDate(1);
+      sysMonthStart.setHours(0, 0, 0, 0);
+
+      const { data: sysUsage } = await supabase
+        .from('ai_usage')
+        .select('cost_cents')
+        .gte('created_at', sysMonthStart.toISOString());
+
+      const sysSpent = (sysUsage || []).reduce(
+        (sum: number, row: { cost_cents: number }) => sum + (row.cost_cents || 0),
+        0,
+      );
+
+      systemCeiling = {
+        ceilingCents: systemCeilingCents,
+        systemSpentCents: sysSpent,
+        spendPct: Math.round((sysSpent / systemCeilingCents) * 100),
+        exceeded: sysSpent >= systemCeilingCents,
+      };
+    }
+
     return NextResponse.json({
       data: {
         enabled: globalEnabled && orgEnabled,
@@ -131,6 +163,7 @@ export async function GET(request: NextRequest) {
         quotaRemaining,
         cache: cacheStats,
         costPressure,
+        systemCeiling,
       },
     });
   } catch (error) {

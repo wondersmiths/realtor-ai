@@ -19,6 +19,8 @@ const envSchema = z.object({
   AI_MODEL_FALLBACK: z.string().min(1).optional(),
   RESEND_API_KEY: z.string().min(1).optional(),
   FROM_EMAIL: z.string().email().default('noreply@realtorai.com'),
+  AI_SYSTEM_MONTHLY_CEILING_CENTS: z.coerce.number().int().min(0).default(0),
+  AI_SYSTEM_ADMIN_EMAIL: z.string().email().optional(),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

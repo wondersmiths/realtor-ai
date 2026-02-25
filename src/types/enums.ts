@@ -251,6 +251,7 @@ export enum AuditAction {
   AIQuotaUpdated = 'ai.quota_updated',
   AICostLimitUpdated = 'ai.cost_limit_updated',
   AICostLimitReached = 'ai.cost_limit_reached',
+  AISystemCeilingBreached = 'ai.system_ceiling_breached',
 
   // Billing
   SubscriptionCreated = 'billing.subscription_created',

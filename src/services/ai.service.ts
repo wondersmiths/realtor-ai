@@ -12,6 +12,7 @@ import type {
 } from '@/types/database';
 import { AIUsageStatus, AuditAction } from '@/types/enums';
 import { AuditService } from '@/services/audit.service';
+import { NotificationService } from '@/services/notification.service';
 import type {
   AIResult,
   FairHousingResult,
@@ -113,6 +114,10 @@ const OPERATION_CREDIT_COST: Record<string, number> = {
 
 // Operations gated behind Tier 2 (disabled when monthly soft limit is fully exhausted)
 const ADVANCED_OPERATIONS = new Set<string>(['risk_prediction', 'batch_process']);
+
+// System ceiling alert throttle (module-level, best-effort across instances)
+let lastSystemCeilingAlertAt = 0;
+const SYSTEM_CEILING_ALERT_INTERVAL_MS = 3_600_000; // 1 hour
 
 function resolveModel(operation: string, downgradeSteps = 0): string {
   const baseTier = OPERATION_MODEL_TIER[operation] || 'standard';
@@ -271,7 +276,44 @@ export class AIService {
       // No quota record found - proceed (org may not have quotas configured)
     }
 
-    // 4. Check cost limits & compute cost-aware downgrade
+    // 4. System-wide ceiling check (before per-org cost limits)
+    const systemCheck = await this.checkSystemCeiling();
+    if (systemCheck.exceeded) {
+      downgradeSteps = Math.max(downgradeSteps, 2); // force fast model
+      const previousModel = model;
+      model = resolveModel(operation, downgradeSteps);
+
+      await this.logGuardrailEvent({
+        orgId, userId, operation,
+        guardrailTier: 'system_ceiling_breach',
+        totalSpentCents: systemCheck.systemSpentCents,
+        limitCents: systemCheck.ceilingCents,
+      });
+
+      // Throttled admin alert (at most once per hour)
+      const now = Date.now();
+      if (now - lastSystemCeilingAlertAt > SYSTEM_CEILING_ALERT_INTERVAL_MS) {
+        const adminEmail = process.env.AI_SYSTEM_ADMIN_EMAIL;
+        if (adminEmail) {
+          lastSystemCeilingAlertAt = now;
+          NotificationService.sendSystemCeilingAlert(
+            adminEmail,
+            systemCheck.systemSpentCents,
+            systemCheck.ceilingCents,
+          ).catch((err) => {
+            console.error('[AIService] Failed to send system ceiling alert:', err);
+          });
+        }
+      }
+
+      if (model !== previousModel) {
+        console.log(
+          `[AIService] System ceiling breach: ${operation} ${previousModel} → ${model} (forced fast)`
+        );
+      }
+    }
+
+    // 4b. Check per-org cost limits & compute cost-aware downgrade
     try {
       const { data: costLimit } = await this.supabase
         .from('ai_cost_limits')
@@ -1085,7 +1127,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     orgId: string;
     userId?: string;
     operation: string;
-    guardrailTier: 'model_downgrade' | 'advanced_feature_disabled' | 'hard_block';
+    guardrailTier: 'model_downgrade' | 'advanced_feature_disabled' | 'hard_block' | 'system_ceiling_breach';
     totalSpentCents: number;
     limitCents: number;
     dailySpentCents?: number;
@@ -1107,10 +1149,13 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
 
     try {
       const auditService = new AuditService(this.supabase);
+      const auditAction = params.guardrailTier === 'system_ceiling_breach'
+        ? AuditAction.AISystemCeilingBreached
+        : AuditAction.AICostLimitReached;
       await auditService.log({
         organizationId: params.orgId,
         userId: params.userId || null,
-        action: AuditAction.AICostLimitReached,
+        action: auditAction,
         resourceType: 'ai_cost_limit',
         resourceId: params.orgId,
         metadata: {
@@ -1123,6 +1168,40 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     } catch {
       // Non-critical — guardrail logging must not break the caller
     }
+  }
+
+  /**
+   * Check system-wide monthly AI spend ceiling across all orgs.
+   */
+  private async checkSystemCeiling(): Promise<{
+    exceeded: boolean;
+    systemSpentCents: number;
+    ceilingCents: number;
+  }> {
+    const ceiling = Number(process.env.AI_SYSTEM_MONTHLY_CEILING_CENTS) || 0;
+    if (ceiling <= 0) {
+      return { exceeded: false, systemSpentCents: 0, ceilingCents: 0 };
+    }
+
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const { data: systemUsage } = await this.supabase
+      .from('ai_usage')
+      .select('cost_cents')
+      .gte('created_at', monthStart.toISOString());
+
+    const systemSpent = (systemUsage || []).reduce(
+      (sum: number, row: any) => sum + (row.cost_cents || 0),
+      0,
+    );
+
+    return {
+      exceeded: systemSpent >= ceiling,
+      systemSpentCents: systemSpent,
+      ceilingCents: ceiling,
+    };
   }
 
   /**
