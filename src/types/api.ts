@@ -311,3 +311,46 @@ export interface EvaluationReportResponse {
   started_at: string;
   completed_at: string | null;
 }
+
+// ──────────────────────────────────────────────
+// Regression Pipeline / Deployment Gate
+// ──────────────────────────────────────────────
+export interface RegressionGateRequest {
+  triggered_by: 'ci' | 'deploy' | 'manual';
+  run_types?: string[];               // defaults to all active types
+  tags?: string[];
+  f1_drop_threshold?: number;          // max allowed F1 drop (default 0.05)
+  min_f1?: number;                     // absolute minimum F1 (default 0.7)
+  commit_sha?: string;
+  branch?: string;
+}
+
+export interface RegressionTypeResult {
+  run_type: string;
+  run_id: string;
+  current_f1: number;
+  current_precision: number;
+  current_recall: number;
+  previous_f1: number | null;
+  f1_delta: number | null;
+  precision_delta: number | null;
+  recall_delta: number | null;
+  total_cases: number;
+  passed: number;
+  failed: number;
+  gate_passed: boolean;
+  block_reason: string | null;
+}
+
+export interface RegressionGateResponse {
+  gate_passed: boolean;
+  triggered_by: string;
+  commit_sha: string | null;
+  branch: string | null;
+  f1_drop_threshold: number;
+  min_f1: number;
+  results: RegressionTypeResult[];
+  block_reasons: string[];
+  started_at: string;
+  completed_at: string;
+}

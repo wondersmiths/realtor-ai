@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { FlaskConical, Target, Crosshair, Activity } from 'lucide-react';
+import { FlaskConical, Target, Crosshair, Activity, ShieldCheck, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useOrganization } from '@/hooks/use-organization';
 import { usePermissions } from '@/hooks/use-permissions';
-import type { EvaluationCaseResult, EvaluationReportResponse } from '@/types/api';
+import type { EvaluationCaseResult, EvaluationReportResponse, RegressionGateResponse } from '@/types/api';
 import type { GroundTruthDocument } from '@/types/database';
 
 // ──────────────────────────────────────────────
@@ -74,6 +74,32 @@ export default function EvaluationsPage() {
   }>>([]);
   const [runsLoading, setRunsLoading] = useState(true);
 
+  // Regression history state
+  const [regressionHistory, setRegressionHistory] = useState<Array<{
+    id: string;
+    run_type: string;
+    model: string;
+    f1_score: number | null;
+    precision_score: number | null;
+    recall_score: number | null;
+    previous_f1: number | null;
+    f1_delta: number | null;
+    triggered_by: string;
+    status: string;
+    notes: string | null;
+    total_cases: number;
+    passed: number;
+    failed: number;
+    completed_at: string | null;
+    created_at: string;
+  }>>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+
+  // Regression gate state
+  const [gateLoading, setGateLoading] = useState(false);
+  const [gateResult, setGateResult] = useState<RegressionGateResponse | null>(null);
+  const [gateError, setGateError] = useState<string | null>(null);
+
   const [error, setError] = useState<string | null>(null);
 
   const orgId = currentOrg?.id;
@@ -124,12 +150,29 @@ export default function EvaluationsPage() {
     }
   }, [orgId, headers]);
 
+  // Fetch regression history
+  const fetchHistory = useCallback(async () => {
+    if (!orgId) return;
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/evaluations/regression-gate`, { headers: headers() });
+      if (!res.ok) throw new Error('Failed to fetch regression history');
+      const json = await res.json();
+      setRegressionHistory(json.data ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [orgId, headers]);
+
   useEffect(() => {
     if ((isOwner || isAdmin) && orgId) {
       fetchGroundTruths();
       fetchRuns();
+      fetchHistory();
     }
-  }, [fetchGroundTruths, fetchRuns, isOwner, isAdmin, orgId]);
+  }, [fetchGroundTruths, fetchRuns, fetchHistory, isOwner, isAdmin, orgId]);
 
   if (!isOwner && !isAdmin) return null;
 
@@ -198,6 +241,31 @@ export default function EvaluationsPage() {
       setRunError(err instanceof Error ? err.message : 'Evaluation failed');
     } finally {
       setRunLoading(false);
+    }
+  };
+
+  // Regression gate handler
+  const handleRunGate = async () => {
+    setGateLoading(true);
+    setGateError(null);
+    setGateResult(null);
+    try {
+      const res = await fetch('/api/evaluations/regression-gate', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ triggered_by: 'manual' }),
+      });
+      const json = await res.json();
+      if (res.status !== 200 && res.status !== 422) {
+        throw new Error(json?.error?.message || 'Gate check failed');
+      }
+      setGateResult(json.data);
+      fetchHistory();
+      fetchRuns();
+    } catch (err) {
+      setGateError(err instanceof Error ? err.message : 'Gate check failed');
+    } finally {
+      setGateLoading(false);
     }
   };
 
@@ -309,6 +377,7 @@ export default function EvaluationsPage() {
               <TabsTrigger value="ground-truth">Ground Truth</TabsTrigger>
               <TabsTrigger value="run-evaluation">Run Evaluation</TabsTrigger>
               <TabsTrigger value="accuracy-report">Accuracy Report</TabsTrigger>
+              <TabsTrigger value="regression-gate">Regression Gate</TabsTrigger>
             </TabsList>
 
             {/* Ground Truth Tab */}
@@ -605,6 +674,193 @@ export default function EvaluationsPage() {
                             </td>
                           </tr>
                         ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </TabsContent>
+            {/* Regression Gate Tab */}
+            <TabsContent value="regression-gate">
+              <div className="space-y-6">
+                {/* Gate trigger */}
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={handleRunGate}
+                    disabled={gateLoading}
+                    className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    <ShieldCheck className="h-4 w-4" />
+                    {gateLoading ? 'Running Gate Check...' : 'Run Regression Gate'}
+                  </button>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Runs all detection types against the full labeled dataset and blocks if accuracy drops.
+                  </p>
+                </div>
+
+                {gateError && (
+                  <p className="text-sm text-red-600 dark:text-red-400">{gateError}</p>
+                )}
+
+                {/* Gate result */}
+                {gateResult && (
+                  <div className="rounded-lg border p-4 space-y-4" style={{
+                    borderColor: gateResult.gate_passed ? '#22c55e' : '#ef4444',
+                  }}>
+                    <div className="flex items-center gap-3">
+                      <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-bold ${
+                        gateResult.gate_passed
+                          ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                          : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
+                      }`}>
+                        <ShieldCheck className="h-4 w-4" />
+                        {gateResult.gate_passed ? 'GATE PASSED' : 'GATE BLOCKED'}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        Threshold: {(gateResult.f1_drop_threshold * 100).toFixed(0)}pp drop | Min F1: {(gateResult.min_f1 * 100).toFixed(0)}%
+                      </span>
+                    </div>
+
+                    {gateResult.block_reasons.length > 0 && (
+                      <div className="rounded bg-red-50 p-3 dark:bg-red-900/10">
+                        <p className="text-xs font-medium text-red-700 dark:text-red-400 mb-1">Block Reasons:</p>
+                        {gateResult.block_reasons.map((reason, i) => (
+                          <p key={i} className="text-sm text-red-600 dark:text-red-400">- {reason}</p>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-200 dark:border-gray-700">
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Type</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">F1</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Delta</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Precision</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Recall</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Cases</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-500">Gate</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {gateResult.results.map((r) => (
+                            <tr key={r.run_type} className="border-b border-gray-100 dark:border-gray-800">
+                              <td className="px-3 py-2 font-medium">{r.run_type}</td>
+                              <td className="px-3 py-2">{pct(r.current_f1)}</td>
+                              <td className="px-3 py-2">
+                                {r.f1_delta !== null ? (
+                                  <span className={`inline-flex items-center gap-0.5 ${r.f1_delta >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {r.f1_delta >= 0
+                                      ? <ArrowUpRight className="h-3 w-3" />
+                                      : <ArrowDownRight className="h-3 w-3" />}
+                                    {(Math.abs(r.f1_delta) * 100).toFixed(1)}pp
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400">-</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2">{pct(r.current_precision)}</td>
+                              <td className="px-3 py-2">{pct(r.current_recall)}</td>
+                              <td className="px-3 py-2">{r.passed}/{r.total_cases}</td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  r.gate_passed
+                                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                    : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                                }`}>
+                                  {r.gate_passed ? 'PASS' : 'BLOCK'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Regression History */}
+                <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">Regression History</h3>
+                {historyLoading ? (
+                  <Skeleton className="h-40 w-full" />
+                ) : regressionHistory.length === 0 ? (
+                  <p className="text-sm text-gray-500">No regression history yet.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200 dark:border-gray-700">
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Type</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">F1</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Delta</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Cases</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Trigger</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Status</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Gate</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {regressionHistory.map((r) => {
+                          const isGatePass = r.notes?.includes('PASSED') ?? false;
+                          const isGateBlock = r.notes?.includes('BLOCKED') ?? false;
+                          return (
+                            <tr key={r.id} className="border-b border-gray-100 dark:border-gray-800">
+                              <td className="px-3 py-2 font-medium">{r.run_type}</td>
+                              <td className="px-3 py-2">{r.f1_score != null ? pct(r.f1_score) : '-'}</td>
+                              <td className="px-3 py-2">
+                                {r.f1_delta !== null ? (
+                                  <span className={`inline-flex items-center gap-0.5 ${r.f1_delta >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {r.f1_delta >= 0
+                                      ? <ArrowUpRight className="h-3 w-3" />
+                                      : <ArrowDownRight className="h-3 w-3" />}
+                                    {(Math.abs(r.f1_delta) * 100).toFixed(1)}pp
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400">first run</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className="text-green-600">{r.passed}</span>
+                                {'/'}
+                                <span>{r.total_cases}</span>
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  r.triggered_by === 'ci' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
+                                    : r.triggered_by === 'deploy' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+                                    : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+                                }`}>
+                                  {r.triggered_by}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  r.status === 'completed'
+                                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                    : r.status === 'running'
+                                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                      : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                                }`}>
+                                  {r.status}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2">
+                                {isGatePass ? (
+                                  <span className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">PASS</span>
+                                ) : isGateBlock ? (
+                                  <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">BLOCK</span>
+                                ) : (
+                                  <span className="text-gray-400">-</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 text-gray-500">
+                                {r.completed_at ? new Date(r.completed_at).toLocaleDateString() : '-'}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
