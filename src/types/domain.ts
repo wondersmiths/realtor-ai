@@ -133,6 +133,51 @@ export interface FairHousingResult {
 }
 
 // ──────────────────────────────────────────────
+// Document Classification Result
+// ──────────────────────────────────────────────
+export interface DocumentClassification {
+  documentType: string;
+  confidence: number;
+  subType: string;
+  jurisdiction: string;
+  requiredActions: string[];
+  summary: string;
+}
+
+// ──────────────────────────────────────────────
+// Compliance Explanation Result
+// ──────────────────────────────────────────────
+export interface ComplianceExplanation {
+  ruleId: string;
+  ruleName: string;
+  explanation: string;
+  legalBasis: string;
+  impact: 'informational' | 'moderate' | 'severe';
+  remediation: string;
+  examples: string[];
+}
+
+// ──────────────────────────────────────────────
+// Risk Prediction Results
+// ──────────────────────────────────────────────
+export interface RiskPattern {
+  patternId: string;
+  patternName: string;
+  riskLevel: string;
+  probability: number;
+  description: string;
+  affectedAreas: string[];
+  preventiveActions: string[];
+}
+
+export interface RiskPredictionResult {
+  overallRiskScore: number;
+  patterns: RiskPattern[];
+  summary: string;
+  timeHorizon: string;
+}
+
+// ──────────────────────────────────────────────
 // Generic AI Result Wrapper
 // ──────────────────────────────────────────────
 export interface AIResult<T> {

@@ -15,7 +15,16 @@ import type {
   AIResult,
   FairHousingResult,
   FairHousingViolation,
+  DocumentClassification,
+  ComplianceExplanation,
+  RiskPredictionResult,
 } from '@/types/domain';
+import {
+  documentClassificationSchema,
+  complianceExplanationSchema,
+  riskPredictionResultSchema,
+} from '@/lib/ai/schemas';
+import { aiLimiter, checkRateLimit } from '@/lib/redis/rate-limiter';
 import { createHash } from 'crypto';
 
 // ──────────────────────────────────────────────
@@ -42,20 +51,45 @@ interface ExecuteAICallOptions<T> {
   promptBuilder: () => { system: string; user: string };
   responseSchema: z.ZodSchema<T>;
   fallbackFn: () => T;
+  maxInputChars?: number;
 }
 
 // ──────────────────────────────────────────────
 // Constants
 // ──────────────────────────────────────────────
 
-const MODEL = 'claude-sonnet-4-20250514';
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
 const CACHE_TTL_HOURS = 24;
+const DEFAULT_MAX_INPUT_CHARS = 15000;
 
-// Cost per 1K tokens in cents (approximate for Claude claude-sonnet-4-20250514)
-const INPUT_COST_PER_1K_CENTS = 0.3;
-const OUTPUT_COST_PER_1K_CENTS = 1.5;
+// ──────────────────────────────────────────────
+// Model routing
+// ──────────────────────────────────────────────
+
+type ModelTier = 'fast' | 'standard';
+
+const MODEL_TIER_MAP: Record<ModelTier, string> = {
+  fast: 'claude-haiku-4-20250514',
+  standard: 'claude-sonnet-4-20250514',
+};
+
+const OPERATION_MODEL_TIER: Record<string, ModelTier> = {
+  document_classification: 'fast',
+  compliance_explanation: 'fast',
+  // All other operations default to 'standard'
+};
+
+function resolveModel(operation: string): string {
+  const tier = OPERATION_MODEL_TIER[operation] || 'standard';
+  return MODEL_TIER_MAP[tier];
+}
+
+// Cost per 1K tokens in cents, keyed by model
+const MODEL_COSTS: Record<string, { input: number; output: number }> = {
+  'claude-sonnet-4-20250514': { input: 0.3, output: 1.5 },
+  'claude-haiku-4-20250514': { input: 0.08, output: 0.4 },
+};
 
 // ──────────────────────────────────────────────
 // Response schemas for Zod validation
@@ -133,8 +167,9 @@ export class AIService {
    * 12. On error -> log + return fallback
    */
   async executeAICall<T>(options: ExecuteAICallOptions<T>): Promise<AIResult<T>> {
-    const { orgId, userId, operation, promptBuilder, responseSchema, fallbackFn } = options;
+    const { orgId, userId, operation, promptBuilder, responseSchema, fallbackFn, maxInputChars } = options;
     const startTime = Date.now();
+    const model = resolveModel(operation);
 
     // 1. Check global AI_ENABLED env var
     const aiEnabled = process.env.AI_ENABLED !== 'false';
@@ -155,6 +190,12 @@ export class AIService {
       }
     } catch {
       return this.buildFallbackResult(fallbackFn(), 'Failed to verify org AI settings');
+    }
+
+    // 2b. Check rate limit
+    const { success: withinLimit } = await checkRateLimit(aiLimiter, orgId);
+    if (!withinLimit) {
+      return this.buildFallbackResult(fallbackFn(), 'AI rate limit exceeded');
     }
 
     // 3. Check quota
@@ -235,7 +276,12 @@ export class AIService {
     }
 
     // 5. Check cache
-    const prompts = promptBuilder();
+    const rawPrompts = promptBuilder();
+    const maxChars = maxInputChars ?? DEFAULT_MAX_INPUT_CHARS;
+    const prompts = {
+      system: rawPrompts.system,
+      user: this.preprocessInput(rawPrompts.user, maxChars),
+    };
     const inputHash = this.hashInput(operation, prompts.system, prompts.user);
 
     try {
@@ -289,7 +335,7 @@ export class AIService {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         response = await client.messages.create({
-          model: MODEL,
+          model,
           max_tokens: 4096,
           system: prompts.system,
           messages: [
@@ -332,9 +378,10 @@ export class AIService {
     const inputTokens = response.usage?.input_tokens || 0;
     const outputTokens = response.usage?.output_tokens || 0;
     const totalTokens = inputTokens + outputTokens;
+    const costs = MODEL_COSTS[model] || MODEL_COSTS['claude-sonnet-4-20250514'];
     const costCents = Math.ceil(
-      (inputTokens / 1000) * INPUT_COST_PER_1K_CENTS +
-        (outputTokens / 1000) * OUTPUT_COST_PER_1K_CENTS
+      (inputTokens / 1000) * costs.input +
+        (outputTokens / 1000) * costs.output
     );
 
     // 8. Validate response against schema
@@ -396,7 +443,7 @@ export class AIService {
           operation,
           input_hash: inputHash,
           response: parsed as Record<string, unknown>,
-          model: MODEL,
+          model,
           tokens_saved: totalTokens,
           hit_count: 0,
           expires_at: expiresAt.toISOString(),
@@ -412,7 +459,7 @@ export class AIService {
       data: parsed,
       aiUsed: true,
       fallback: false,
-      model: MODEL,
+      model,
       tokensUsed: totalTokens,
       latencyMs,
       cached: false,
@@ -600,9 +647,178 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     });
   }
 
+  /**
+   * Classify a document by type and jurisdiction using AI.
+   */
+  async classifyDocument(
+    orgId: string,
+    userId: string,
+    text: string,
+    fileName?: string
+  ): Promise<AIResult<DocumentClassification>> {
+    return this.executeAICall<DocumentClassification>({
+      orgId,
+      userId,
+      operation: 'document_classification',
+      maxInputChars: 8000,
+      promptBuilder: () => ({
+        system: `You are a real estate document classification expert. Classify the provided document by type, sub-type, and jurisdiction.
+
+Respond with ONLY a JSON object (no markdown, no explanation) in this exact format:
+{
+  "documentType": "<e.g. purchase_agreement, lease, disclosure, deed, addendum, inspection_report>",
+  "confidence": <0-100 confidence score>,
+  "subType": "<more specific type, e.g. seller_disclosure, lead_paint_disclosure>",
+  "jurisdiction": "<state or jurisdiction if identifiable, otherwise 'unknown'>",
+  "requiredActions": ["<action needed based on document type>"],
+  "summary": "<brief summary of the document>"
+}`,
+        user: `Classify this document${fileName ? ` (filename: ${fileName})` : ''}:\n\n${text}`,
+      }),
+      responseSchema: documentClassificationSchema,
+      fallbackFn: () => ({
+        documentType: 'unknown',
+        confidence: 0,
+        subType: 'unknown',
+        jurisdiction: 'unknown',
+        requiredActions: [],
+        summary: 'Document classification is currently unavailable.',
+      }),
+    });
+  }
+
+  /**
+   * Generate a plain-language explanation of a compliance rule and finding.
+   */
+  async generateComplianceExplanation(
+    orgId: string,
+    userId: string,
+    ruleId: string,
+    findingMessage: string,
+    jurisdiction?: string
+  ): Promise<AIResult<ComplianceExplanation>> {
+    return this.executeAICall<ComplianceExplanation>({
+      orgId,
+      userId,
+      operation: 'compliance_explanation',
+      maxInputChars: 4000,
+      promptBuilder: () => ({
+        system: `You are a real estate compliance expert. Provide a clear, plain-language explanation of the given compliance rule and finding. Include legal basis, impact assessment, and actionable remediation steps.
+
+Respond with ONLY a JSON object (no markdown, no explanation) in this exact format:
+{
+  "ruleId": "<the rule ID>",
+  "ruleName": "<human-readable rule name>",
+  "explanation": "<clear explanation of what this rule requires and why the finding was triggered>",
+  "legalBasis": "<relevant law, regulation, or standard>",
+  "impact": "<informational|moderate|severe>",
+  "remediation": "<specific steps to resolve this finding>",
+  "examples": ["<example of compliant vs non-compliant behavior>"]
+}`,
+        user: `Explain this compliance finding${jurisdiction ? ` (jurisdiction: ${jurisdiction})` : ''}:\n\nRule ID: ${ruleId}\nFinding: ${findingMessage}`,
+      }),
+      responseSchema: complianceExplanationSchema,
+      fallbackFn: () => ({
+        ruleId,
+        ruleName: ruleId,
+        explanation: 'Compliance explanation is currently unavailable. Please consult your compliance officer for details on this finding.',
+        legalBasis: 'Unable to determine',
+        impact: 'informational' as const,
+        remediation: 'Please review this finding manually with your compliance team.',
+        examples: [],
+      }),
+    });
+  }
+
+  /**
+   * Predict risk patterns from portfolio-level compliance data.
+   */
+  async predictRiskPatterns(
+    orgId: string,
+    userId: string,
+    portfolioData: {
+      recentFindings: Array<{ type: string; severity: string; message: string }>;
+      complianceScores: Array<{ area: string; score: number }>;
+      violationHistory: Array<{ type: string; date: string; resolved: boolean }>;
+    }
+  ): Promise<AIResult<RiskPredictionResult>> {
+    return this.executeAICall<RiskPredictionResult>({
+      orgId,
+      userId,
+      operation: 'risk_prediction',
+      maxInputChars: 12000,
+      promptBuilder: () => ({
+        system: `You are a real estate compliance risk analyst. Analyze the provided portfolio data to identify risk patterns and predict potential compliance issues.
+
+Respond with ONLY a JSON object (no markdown, no explanation) in this exact format:
+{
+  "overallRiskScore": <0-100 where 100 is highest risk>,
+  "patterns": [
+    {
+      "patternId": "<unique pattern identifier>",
+      "patternName": "<descriptive name>",
+      "riskLevel": "<low|medium|high|critical>",
+      "probability": <0-100 likelihood of occurrence>,
+      "description": "<description of the risk pattern>",
+      "affectedAreas": ["<compliance areas affected>"],
+      "preventiveActions": ["<recommended preventive action>"]
+    }
+  ],
+  "summary": "<overall risk assessment summary>",
+  "timeHorizon": "<e.g. 30 days, 90 days, 6 months>"
+}`,
+        user: `Analyze this portfolio data for risk patterns:\n\nRecent Findings:\n${JSON.stringify(portfolioData.recentFindings, null, 2)}\n\nCompliance Scores:\n${JSON.stringify(portfolioData.complianceScores, null, 2)}\n\nViolation History:\n${JSON.stringify(portfolioData.violationHistory, null, 2)}`,
+      }),
+      responseSchema: riskPredictionResultSchema,
+      fallbackFn: () => ({
+        overallRiskScore: 50,
+        patterns: [],
+        summary: 'Risk prediction is currently unavailable. Manual portfolio review is recommended.',
+        timeHorizon: '90 days',
+      }),
+    });
+  }
+
   // ──────────────────────────────────────────────
   // Private helpers
   // ──────────────────────────────────────────────
+
+  /**
+   * Preprocess input text: sanitize, redact PII, and smart-truncate.
+   */
+  private preprocessInput(text: string, maxChars: number): string {
+    // 1. Strip null bytes and control chars (keep \n, \r, \t)
+    let cleaned = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+
+    // 2. Collapse excessive whitespace (3+ newlines → 2, 2+ spaces → 1)
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+    cleaned = cleaned.replace(/[ \t]{2,}/g, ' ');
+
+    // 3. Redact PII patterns
+    // SSN: xxx-xx-xxxx or xxxxxxxxx
+    cleaned = cleaned.replace(/\b\d{3}-\d{2}-\d{4}\b/g, '[SSN_REDACTED]');
+    cleaned = cleaned.replace(/\b\d{9}\b/g, '[SSN_REDACTED]');
+    // Credit card: 13-19 digit sequences with optional separators
+    cleaned = cleaned.replace(/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{1,7}\b/g, '[CC_REDACTED]');
+
+    // 4. Smart truncation at sentence boundaries
+    if (cleaned.length > maxChars) {
+      const truncated = cleaned.slice(0, maxChars);
+      const lastSentenceEnd = Math.max(
+        truncated.lastIndexOf('. '),
+        truncated.lastIndexOf('.\n'),
+        truncated.lastIndexOf('? '),
+        truncated.lastIndexOf('! ')
+      );
+      if (lastSentenceEnd > maxChars * 0.8) {
+        cleaned = truncated.slice(0, lastSentenceEnd + 1);
+      } else {
+        cleaned = truncated;
+      }
+    }
+
+    return cleaned;
+  }
 
   /**
    * Build a fallback result with metadata.
@@ -633,6 +849,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
     operation: string,
     details: {
       status: AIUsageStatus;
+      model?: string;
       errorMessage?: string;
       inputTokens?: number;
       outputTokens?: number;
@@ -646,7 +863,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) in this exact form
         organization_id: orgId,
         user_id: userId,
         operation,
-        model: MODEL,
+        model: details.model || resolveModel(operation),
         provider: 'anthropic',
         input_tokens: details.inputTokens || 0,
         output_tokens: details.outputTokens || 0,

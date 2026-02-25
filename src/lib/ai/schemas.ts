@@ -80,3 +80,57 @@ export const complianceSummarySchema = z.object({
 });
 
 export type ComplianceSummaryResponse = z.infer<typeof complianceSummarySchema>;
+
+// ──────────────────────────────────────────────
+// Document Classification
+// ──────────────────────────────────────────────
+
+export const documentClassificationSchema = z.object({
+  documentType: z.string(),
+  confidence: z.number().min(0).max(100),
+  subType: z.string(),
+  jurisdiction: z.string(),
+  requiredActions: z.array(z.string()),
+  summary: z.string(),
+});
+
+export type DocumentClassificationResponse = z.infer<typeof documentClassificationSchema>;
+
+// ──────────────────────────────────────────────
+// Compliance Explanation
+// ──────────────────────────────────────────────
+
+export const complianceExplanationSchema = z.object({
+  ruleId: z.string(),
+  ruleName: z.string(),
+  explanation: z.string(),
+  legalBasis: z.string(),
+  impact: z.enum(['informational', 'moderate', 'severe']),
+  remediation: z.string(),
+  examples: z.array(z.string()),
+});
+
+export type ComplianceExplanationResponse = z.infer<typeof complianceExplanationSchema>;
+
+// ──────────────────────────────────────────────
+// Risk Prediction
+// ──────────────────────────────────────────────
+
+export const riskPatternSchema = z.object({
+  patternId: z.string(),
+  patternName: z.string(),
+  riskLevel: z.string(),
+  probability: z.number().min(0).max(100),
+  description: z.string(),
+  affectedAreas: z.array(z.string()),
+  preventiveActions: z.array(z.string()),
+});
+
+export const riskPredictionResultSchema = z.object({
+  overallRiskScore: z.number().min(0).max(100),
+  patterns: z.array(riskPatternSchema),
+  summary: z.string(),
+  timeHorizon: z.string(),
+});
+
+export type RiskPredictionResultResponse = z.infer<typeof riskPredictionResultSchema>;
