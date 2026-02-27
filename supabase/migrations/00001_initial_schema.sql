@@ -9,32 +9,9 @@ create extension if not exists "pg_trgm";    -- trigram index support for text s
 
 -- ────────────────────────────────────────────
 -- Helper functions (SECURITY DEFINER)
+-- Note: get_user_org_ids and get_user_role are defined after
+-- the memberships table since they depend on it.
 -- ────────────────────────────────────────────
-
--- Returns org IDs where the calling user has an active membership
-create or replace function public.get_user_org_ids()
-returns uuid[] language sql stable security definer set search_path = ''
-as $$
-  select coalesce(
-    array_agg(m.organization_id),
-    '{}'::uuid[]
-  )
-  from public.memberships m
-  where m.user_id = (select auth.uid())
-    and m.deleted_at is null;
-$$;
-
--- Returns the role the calling user holds in a given org
-create or replace function public.get_user_role(org_id uuid)
-returns text language sql stable security definer set search_path = ''
-as $$
-  select m.role
-  from public.memberships m
-  where m.user_id = (select auth.uid())
-    and m.organization_id = org_id
-    and m.deleted_at is null
-  limit 1;
-$$;
 
 -- Auto-update updated_at trigger function
 create or replace function public.set_updated_at()
@@ -141,6 +118,35 @@ create index idx_memberships_user on public.memberships (user_id) where deleted_
 create trigger trg_memberships_updated_at
   before update on public.memberships
   for each row execute function public.set_updated_at();
+
+-- ────────────────────────────────────────────
+-- Helper functions that depend on memberships
+-- ────────────────────────────────────────────
+
+-- Returns org IDs where the calling user has an active membership
+create or replace function public.get_user_org_ids()
+returns uuid[] language sql stable security definer set search_path = ''
+as $$
+  select coalesce(
+    array_agg(m.organization_id),
+    '{}'::uuid[]
+  )
+  from public.memberships m
+  where m.user_id = (select auth.uid())
+    and m.deleted_at is null;
+$$;
+
+-- Returns the role the calling user holds in a given org
+create or replace function public.get_user_role(org_id uuid)
+returns text language sql stable security definer set search_path = ''
+as $$
+  select m.role
+  from public.memberships m
+  where m.user_id = (select auth.uid())
+    and m.organization_id = org_id
+    and m.deleted_at is null
+  limit 1;
+$$;
 
 -- ────────────────────────────────────────────
 -- clients (real-estate clients / contacts)
@@ -515,8 +521,7 @@ create table public.ai_cache (
   unique (organization_id, cache_key)
 );
 
-create index idx_ai_cache_lookup on public.ai_cache (organization_id, cache_key)
-  where expires_at > now();
+create index idx_ai_cache_lookup on public.ai_cache (organization_id, cache_key);
 create index idx_ai_cache_expiry on public.ai_cache (expires_at);
 
 
@@ -674,7 +679,7 @@ create table public.rate_limits (
 );
 
 create index idx_rate_limits_blocked on public.rate_limits (blocked_until)
-  where blocked_until is not null and blocked_until > now();
+  where blocked_until is not null;
 create index idx_rate_limits_window on public.rate_limits (window_start);
 
 create trigger trg_rate_limits_updated_at
